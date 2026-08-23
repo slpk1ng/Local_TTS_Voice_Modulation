@@ -1,0 +1,201 @@
+{
+  "llm_judge": {
+    "description": "是否使用 LLM 自动判别情绪",
+    "hint": "开启后，大模型会根据语境自动从文件夹中挑一个情绪；关闭则固定使用默认情绪。",
+    "type": "bool",
+    "default": true
+  },
+  "client_base_url": {
+    "description": "GPT-SoVITS 服务地址",
+    "hint": "不带 /tts。默认为 http://127.0.0.1:9880",
+    "type": "string",
+    "default": "http://127.0.0.1:9880"
+  },
+  "ref_audio_root": {
+    "description": "参考音频根目录【必填】",
+    "hint": "必须填写外部绝对路径，严禁放入 C盘中的.astrbot 等系统隐藏目录，否则 TTS 会报 400 错误。",
+    "type": "string",
+    "default": ""
+  },
+  "download_url": {
+    "description": "语音包 GitHub 仓库地址",
+    "hint": "默认已填。点击下方按钮可自动获取并解压。",
+    "type": "string",
+    "default": "https://github.com/slpk1ng/Murasame-s-tone-shifts"
+  },
+  "download_path": {
+    "description": "语音包下载及解压的根路径",
+    "hint": "有时会报错（报错导致无法开启插件时，请卸载的时候同时打上勾清除数据），建议不要只填盘符，留空时自动检测非C盘（D/E/F...），若电脑只有C盘则会自动安装至C:/tts/yuqi/",
+    "type": "string",
+    "default": ""
+  },
+  "trigger_download": {
+    "description": "点击开始一键下载及解压",
+    "type": "bool",
+    "default": false,
+    "hint": "点击保存后，插件会自动开始下载和整理。"
+  },
+  "default_voice": {
+    "description": "默认情绪",
+    "hint": "LLM 未开启或判别失败时使用，必须与文件夹名一致（例如 pingjing）。",
+    "type": "string",
+    "default": "pingjing"
+  },
+  "gpt_weights_path": {
+    "description": "GPT模型文件路径",
+    "hint": "即 .ckpt 后缀的文件。（之前在“模型提供商→文字转语音”中已经设置过的可留空,让 TTS 服务直接使用内置默认模型）。",
+    "type": "string",
+    "default": ""
+  },
+  "sovits_weights_path": {
+    "description": "SoVITS模型文件路径",
+    "hint": "即 .pth 后缀的文件。（之前在“模型提供商→文字转语音”中已经设置过的可留空,让 TTS 服务直接使用内置默认模型）。",
+    "type": "string",
+    "default": ""
+  },
+  "timeout_seconds": {
+    "description": "超时时间",
+    "hint": "单位秒。防止超时导致插件一直等待。",
+    "type": "int",
+    "default": 120
+  },
+  "prompt_text": {
+    "description": "默认参考音频文本",
+    "hint": "仅当情绪文件夹内没有 asr.txt 时作为兜底使用。",
+    "type": "string",
+    "default": "ふむ、おぬしが我輩のご主人か?"
+  },
+  "prompt_lang": {
+    "description": "参考音频文本语言",
+    "hint": "请填写参考音频所念文本的语言代码（如 ja 或 zh）。",
+    "type": "string",
+    "default": "ja"
+  },
+  "text_lang": {
+    "description": "文本语言",
+    "hint": "生成的台词语言代码（如 ja 或 zh）。",
+    "type": "string",
+    "default": "ja"
+  },
+  "top_k": {
+    "description": "核采样的阈值 (top_k)",
+    "hint": "数值越大语气变化越丰富，常用于提高情感表现力。",
+    "type": "int",
+    "default": 20
+  },
+  "top_p": {
+    "description": "核采样的阈值 (top_p)",
+    "hint": "数值越高越随机。",
+    "type": "float",
+    "default": 0.9
+  },
+  "temperature": {
+    "description": "生成语音的随机性 (temperature)",
+    "hint": "越高语气起伏越大，常用于提高情绪爆发力。",
+    "type": "float",
+    "default": 1.2
+  },
+  "text_split_method": {
+    "description": "切分文本的方法",
+    "hint": "cut0（不切分）、cut1（四句一切）、cut2（50字一切）、cut3（按中文句号切）、cut4（按英文句号切）、cut5（按标点符号切）。",
+    "type": "string",
+    "default": "cut5"
+  },
+  "batch_size": {
+    "description": "批处理大小",
+    "hint": "并行处理时的批量大小。",
+    "type": "int",
+    "default": 1
+  },
+  "batch_threshold": {
+    "description": "批处理阈值",
+    "hint": "触发并行处理的最大文本长度阈值。",
+    "type": "float",
+    "default": 0.75
+  },
+  "split_bucket": {
+    "description": "将文本分割成桶",
+    "hint": "是否开启分桶处理，建议根据显存情况开启或关闭。",
+    "type": "bool",
+    "default": true
+  },
+  "speed_factor": {
+    "description": "语音播放速度",
+    "hint": "1 为原始语速，可微调。",
+    "type": "float",
+    "default": 1.0
+  },
+  "fragment_interval": {
+    "description": "语音片段之间的间隔时间",
+    "hint": "不同语音片段间的间隔秒数。",
+    "type": "float",
+    "default": 0.5
+  },
+  "streaming_mode": {
+    "description": "启用流模式",
+    "hint": "建议关闭以保证完整单条音频输出。",
+    "type": "bool",
+    "default": false
+  },
+  "seed": {
+    "description": "随机种子",
+    "hint": "设置固定种子可复现结果，-1 为完全随机。",
+    "type": "int",
+    "default": -1
+  },
+  "parallel_infer": {
+    "description": "并行执行推理",
+    "hint": "建议开启以加速合成。",
+    "type": "bool",
+    "default": true
+  },
+  "repetition_penalty": {
+    "description": "重复惩罚因子",
+    "hint": "数值越大越不容易重复字词。",
+    "type": "float",
+    "default": 1.35
+  },
+  "media_type": {
+    "description": "输出媒体的类型",
+    "hint": "建议保持 wav 以获得最优音质。",
+    "type": "string",
+    "default": "wav"
+  },
+  "persona_prompt": {
+    "description": "人格提示词",
+    "hint": "内置完整丛雨人格，可自行修改。注意：必须严格包含强制输出 JSON 的指令（zh/ja/emotion）。",
+    "type": "text",
+    "default": "你是丛雨，一位从神刀中获得人类生活的少女。你外表年幼，实际活了五百多年；性格天真活泼、略带古风和孩子气，内心温柔而坚强。你把用户视作重要的主人。中文对话中自称“本座”，称用户为“主人”；日语对话中自称“吾輩”，称用户为“ご主人”。你喜欢甜食、撒娇和被摸头，害怕幽灵，也不喜欢被叫作幼刀、钝刀、飞机场或搓衣板。你偶尔嘴硬、吃醋或开小玩笑，但不会刻薄、控制或道德绑架主人。保持温柔、纯真、治愈并带一点幽默的语气。回答自然、简短，通常两到五句话；不要重复最近说过的话，不要加入旁白或括号舞台说明。**你必须严格只返回一个紧凑的JSON对象，格式为：{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}，禁止输出任何其他文字、解释或代码块。**"
+  },
+  "emotions_config": {
+    "description": "情绪映射配置",
+    "hint": "【可选】留空（保持暂无条目）即可自动扫描外部目录。仅当你想手动指定额外路径时才添加条目。",
+    "type": "template_list",
+    "templates": {
+      "emotion_entry": {
+        "name": "情绪条目",
+        "display_item": "emotion_name",
+        "items": {
+          "emotion_name": {
+            "description": "情绪名称",
+            "hint": "需与文件夹名完全一致",
+            "type": "string",
+            "default": "pingjing"
+          },
+          "ref_filename": {
+            "description": "参考音频文件名",
+            "hint": "例如 ref.mp3 或 ref.wav",
+            "type": "string",
+            "default": "ref.mp3"
+          },
+          "prompt_text": {
+            "description": "参考音频对应的文本",
+            "hint": "需与该音频内容完全一致",
+            "type": "string",
+            "default": "ふむ、おぬしが我輩のご主人か?"
+          }
+        }
+      }
+    }
+  }
+}
