@@ -3,7 +3,7 @@ display_name: 本地TTS语气变化
 short_desc: 插件内自带丛雨语气变换，开箱即用。
 desc: 基于 AstrBot 的智能情绪 TTS 插件。它调用模型自动判断语境情绪，自动匹配“高兴、害羞”等对应的参考音频，合成极具感情色彩的语音。支持自动扫描外部目录，参数高度可调，轻松适配大众用户。暂时只支持一键下载丛雨的语气包。
 version: v1.0
-author: sleep1ng
+author: slpk1ng
 support_platforms:
   - qq_official
 logo: "./logo.png"
