@@ -7,7 +7,7 @@ import zipfile
 import shutil
 import threading
 import wave
-import subprocess  # 新增：用于自动启动 TTS 服务
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -63,7 +63,7 @@ class Main(Star):
         # ====== 下载功能配置 ======
         self.download_path = self._resolve_tts_path(config.get("download_path", ""))
         self.download_url = config.get("download_url", "https://github.com/slpk1ng/Murasame-s-tone-shifts")
-
+        
         if config.get("trigger_download", False):
             threading.Thread(target=self._download_and_extract, daemon=True).start()
 
@@ -366,8 +366,8 @@ class Main(Star):
                 logger.info(f"成功自动扫描到 {len(emotions)} 个情绪配置: {list(emotions.keys())}")
         return emotions
 
-    # ================== 下载安全加固版 ==================
     def _download_and_extract(self):
+        """后台下载并解压语音包（奶奶的，加ssl下载嘿慢）"""
         try:
             base_emotions = ["pingjing", "gaoxing", "haixiu", "shengqi", "jingya", "zhaoji"]
             for path_to_check in [Path(self.download_path), Path(self.ref_audio_root)]:
@@ -376,43 +376,55 @@ class Main(Star):
                         logger.info(f"检测到语音包已在 {path_to_check} 安装，跳过下载。")
                         return
 
-            if "github.com" not in self.download_url and "githubusercontent.com" not in self.download_url:
-                logger.error("检测到非 GitHub 官方域名的下载地址，已拒绝执行。")
-                return
-
             logger.info("开始下载丛雨语气包...")
             parts = self.download_url.rstrip('/').split('/')
             repo_full_name = f"{parts[-2]}/{parts[-1]}"
 
-            download_url = ""
-            try:
-                api_url = f"https://api.github.com/repos/{repo_full_name}/releases/latest"
-                with httpx.Client(timeout=30, verify=False, follow_redirects=True) as client:
-                    resp = client.get(api_url, headers={"Accept": "application/vnd.github+json"})
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        assets = data.get("assets", [])
-                        if assets and len(assets) > 0:
-                            download_url = assets[0]["browser_download_url"]
-                        else:
-                            raise Exception("Release 没有附件")
-                    else:
-                        raise Exception("API 404")
-            except Exception:
-                logger.warning("未找到带附件的 Release，使用仓库 Archive 直链下载...")
-                download_url = f"https://github.com/{repo_full_name}/archive/refs/heads/main.zip"
-
-            zip_path = Path(self.download_path) / "tone_pack.zip"
+            zip_path = Path(self.download_path) / "yuqi.zip"
             zip_path.parent.mkdir(parents=True, exist_ok=True)
-            logger.info(f"获取到下载链接: {download_url}，开始下载...")
+            download_success = False
 
-            with httpx.Client(timeout=120, verify=False, follow_redirects=True) as client:
-                with client.stream("GET", download_url) as response:
-                    response.raise_for_status()
-                    with open(zip_path, "wb") as f:
-                        for chunk in response.iter_bytes():
-                            f.write(chunk)
+            # ============ 首选方案：使用 gh 命令（不传Tag，自动下载最新Release） ============
+            try:
+                logger.info("正在尝试使用 gh 命令下载最新版本...")
+                # 只要不带 tag 参数，gh 就会自动拉取最新的 Release！
+                result = subprocess.run(
+                    ["gh", "release", "download", "-R", repo_full_name, "-p", "yuqi.zip", "--clobber", "-D", str(zip_path.parent)],
+                    capture_output=True, text=True, timeout=600
+                )
+                if result.returncode == 0 and zip_path.exists() and zip_path.stat().st_size > 0:
+                    logger.info("gh 下载成功！")
+                    download_success = True
+                else:
+                    logger.warning(f"gh 下载失败: {result.stderr}")
+            except FileNotFoundError:
+                logger.warning("未找到 gh 命令，切换为 curl 下载...")
+            except Exception as e:
+                logger.warning(f"gh 下载异常: {e}")
 
+            # ============ 备用方案：使用系统自带 curl（最新版本直链） ============
+            if not download_success:
+                try:
+                    logger.info("正在尝试使用 curl 命令下载...")
+                    download_url = f"https://github.com/{repo_full_name}/releases/latest/download/yuqi.zip"
+                    result = subprocess.run(
+                        ["curl", "-L", "-k", "--retry", "5", "--retry-delay", "3", "-C", "-", "-o", str(zip_path), download_url],
+                        capture_output=True, text=True, timeout=600
+                    )
+                    if result.returncode == 0 and zip_path.exists() and zip_path.stat().st_size > 0:
+                        logger.info("curl 下载成功！")
+                        download_success = True
+                    else:
+                        logger.warning(f"curl 下载失败: {result.stderr}")
+                except Exception as e:
+                    logger.warning(f"curl 下载异常: {e}")
+
+            # ============ 最终兜底：如果都失败，提示手动下载 ============
+            if not download_success:
+                logger.error("自动下载失败！请在浏览器或迅雷中手动下载 yuqi.zip 并解压到目标文件夹。")
+                return
+
+            # ============ 下载成功，开始解压 ============
             logger.info("下载完成，正在解压...")
             with zipfile.ZipFile(zip_path, "r") as z:
                 z.extractall(Path(self.download_path))

@@ -7,9 +7,10 @@ author: slpk1ng
 support_platforms:
   - qq_official
 logo: "./logo.png"
+repo: https://github.com/slpk1ng/Local_TTS_Voice_Modulation
 tags:
+  -工具
   -tts语气变化
   -语音
-  -工具
   -本地
   -tts
