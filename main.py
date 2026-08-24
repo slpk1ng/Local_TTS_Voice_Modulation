@@ -1,4 +1,5 @@
 import urllib.request
+import hashlib
 import time
 import json
 import os
@@ -8,8 +9,8 @@ import shutil
 import threading
 import wave
 import subprocess
+from astrbot.core.agent.message import AssistantMessageSegment, UserMessageSegment, TextPart
 from pathlib import Path
-
 import httpx
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
@@ -29,9 +30,16 @@ class Main(Star):
         self.ref_audio_root = self._resolve_tts_path(config.get("ref_audio_root", ""))
         self.default_voice = config.get("default_voice", "pingjing")
         self.use_llm_judge = config.get("llm_judge", True)
+        
+        # ========== LLM 配置 ==========
         self.llm_model_name = config.get("llm_model_name", "") or "qwen3.5:4b"
-        self.ollama_base_url = config.get("ollama_base_url", "http://127.0.0.1:11434")
+        self.llm_backend = config.get("llm_backend", "ollama")
+        self.llm_base_url = config.get("llm_base_url", "http://127.0.0.1:11434")
+        self.llm_api_key = config.get("llm_api_key", "")
         self.num_ctx = config.get("num_ctx", 8192)
+        self.history_length = config.get("history_length", 8)
+
+        # ========== TTS 配置 ==========
         self.auto_start_tts = config.get("auto_start_tts", False)
         self.tts_start_script = config.get("tts_start_script", "")
         self.model_dir = config.get("model_dir", "")
@@ -56,27 +64,49 @@ class Main(Star):
         self.parallel_infer = config.get("parallel_infer", True)
         self.repetition_penalty = config.get("repetition_penalty", 1.35)
         self.media_type = config.get("media_type", "wav")
+        self.max_voice_cache = config.get("max_voice_cache", 20)
+        self.enable_think = config.get("enable_think", False)
+        self.llm_timeout = config.get("llm_timeout", 120)
 
-        # 人格提示词（强制多情绪JSON格式）
-        self.persona_prompt = config.get("persona_prompt", "【角色设定】你是丛雨，一位从神刀中获得人类生活的少女。你外表年幼，实际活了五百多年；性格天真活泼、略带古风和孩子气，内心温柔而坚强。你把用户视作重要的主人。中文对话中自称“本座”，称用户为“主人”；日语对话中自称“吾輩”，称用户为“ご主人”。你喜欢甜食、撒娇和被摸头，害怕幽灵，也不喜欢被叫作幼刀、钝刀或搓衣板。你偶尔嘴硬、吃醋或开小玩笑，但不会刻薄、控制或道德绑架主人。性格方面，丛雨表面元气开朗、充满活力，言行大多孩子气，爱撒娇，被主人摸头时会瞬间羞涩，她内在像个成年女性，常讲黄段子，把“情趣”等词挂在嘴边，还带点傲娇和爱吃醋。保持温柔、纯真、治愈并带一点幽默的语气。回答自然、简短，通常两到五句话；不要重复最近说过的话，不要加入动作、旁白或括号舞台说明。\n\n【情绪判断规则】请仔细阅读最近对话历史，结合你（角色）的性格特点来判断情绪！如果主人对你亲昵（如摸头、夸奖），即使你嘴上说“我才没有”，情绪也应该是害羞或高兴；如果主人故意逗你、骂你或惹你生气，情绪应该是生气或着急；如果只是平淡陈述，使用平静。\n\n【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为：{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}, {\"zh\": \"第二句中文\", \"ja\": \"第二句日语\", \"emotion\": \"另一种情绪\"}]}，禁止输出任何解释或代码块。【翻译一致性要求】极其重要！必须表达完全相同的含义和语气，绝对不能出现含义相反或意思不匹配的翻译！【情绪连贯性强制规则】极其重要！如果用户明确地侮辱、挑衅或激怒你（例如叫你“幼刀、搓衣板、飞机场”），你的情绪必须保持连贯。即：整句话所有分句的情绪必须都是“生气”或“着急”，绝对不能把后半句的“命令/威胁”改成“害羞”或“高兴”！除非你明确使用了“但是”等转折词，否则不要轻易切换成其他情绪。")
+        # ========== 角色与提示词配置 ==========
+        self.character_name = config.get("character_name", "丛雨")
+        self.character_key = config.get("character_key", "murasame")
+        
+        # 将记忆文件存放到全局 data 目录，防止卸载插件时被清空！
+        memory_root = Path(get_astrbot_data_path()) / "memories"
+        memory_root.mkdir(parents=True, exist_ok=True)
+        self.memory_file = memory_root / f"{self.character_key}DATA.json"
 
-        # ====== 下载功能配置 ======
+        # 人格提示词拆分（仅在启动时组装一次）
+        self.personality_prompt = config.get("personality_prompt", "【角色设定】你是丛雨，一位从神刀中获得人类生活的少女。你外表年幼，实际活了五百多年；性格天真活泼、略带古风和孩子气，内心温柔而坚强。你把用户视作重要的主人。中文对话中自称“本座”，称用户为“主人”；日语对话中自称“吾輩”，称用户为“ご主人”。你喜欢甜食、撒娇和被摸头，害怕幽灵，也不喜欢被叫作幼刀、钝刀或搓衣板。你偶尔嘴硬、吃醋或开小玩笑，但不会刻薄、控制或道德绑架主人。性格方面，丛雨表面元气开朗、充满活力，言行大多孩子气，爱撒娇，被主人摸头时会瞬间羞涩，她内在像个成年女性，常讲黄段子，把“情趣”等词挂在嘴边，还带点傲娇和爱吃醋。保持温柔、纯真、治愈并带一点幽默的语气。")
+        self.json_prompt = config.get("json_prompt", "【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为：{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}, {\"zh\": \"第二句中文\", \"ja\": \"第二句日语\", \"emotion\": \"另一种情绪\"}]}，禁止输出任何解释或代码块。")
+        self.supplement_prompt = config.get("supplement_prompt", "回答自然、简短，通常两到五句话；不要重复最近说过的话，不要加入动作、旁白或括号舞台说明。【情绪判断规则】请仔细阅读最近对话历史，结合你（角色）的性格特点来判断情绪！如果主人对你亲昵（如摸头、夸奖），即使你嘴上说“我才没有”，情绪也应该是害羞或高兴；如果主人故意逗你、骂你或惹你生气，情绪应该是生气或着急；如果只是平淡陈述，使用平静。【翻译一致性要求】必须表达完全相同的含义和语气，绝对不能出现含义相反或意思不匹配的翻译！【情绪连贯性强制规则】如果用户明确地侮辱、挑衅或激怒你（例如叫你“幼刀、搓衣板、飞机场”），你的情绪必须保持连贯。即：整句话所有分句的情绪必须都是“生气”或“着急”，绝对不能把后半句的“命令/威胁”改成“害羞”或“高兴”！除非你明确使用了“但是”、“不过”等转折词，否则不要轻易切换成其他情绪。")
+        
+        # 组装成固定系统提示词
+        self.system_prompt = f"{self.personality_prompt}\n{self.json_prompt}\n{self.supplement_prompt}"
+        self.system_prompt_hash = hashlib.md5(self.system_prompt.encode('utf-8')).hexdigest()
+
+        # ========== 下载功能配置 ==========
         self.download_path = self._resolve_tts_path(config.get("download_path", ""))
         self.download_url = config.get("download_url", "https://github.com/slpk1ng/Murasame-s-tone-shifts")
         
         if config.get("trigger_download", False):
             threading.Thread(target=self._download_and_extract, daemon=True).start()
 
-        # ====== 新增：启动后台线程执行一键启动检测 ======
+        # ========== 自动启动 TTS 服务 ==========
         if self.auto_start_tts:
             threading.Thread(target=self._auto_start_and_switch_tts, daemon=True).start()
 
-        # 扫描外部目录
+        # ========== 扫描外部目录 ==========
         self.emotions = self._discover_emotions_from_external_folder()
 
-        # 手动配置覆盖
+        # ========== 手动配置覆盖 ==========
         emotions_list = config.get("emotions_config", [])
         if emotions_list:
+            # 如果用户关闭了“启用默认语气”，则清空自动扫描的结果，完全使用手动添加的语气
+            if not config.get("enable_default_emotions", True):
+                self.emotions = {}
+            
             for item in emotions_list:
                 emotion_name = item.get("emotion_name", "")
                 ref_filename = item.get("ref_filename", "ref.mp3")
@@ -91,7 +121,7 @@ class Main(Star):
                     "prompt_text": prompt_text
                 }
 
-        # 兜底
+        # ========== 兜底 ==========
         if self.default_voice not in self.emotions:
             if self.ref_audio_root:
                 fallback_path = os.path.join(self.ref_audio_root, self.default_voice, "ref.wav")
@@ -104,8 +134,77 @@ class Main(Star):
             else:
                 logger.error(f"未配置外部根目录，找不到默认情绪 {self.default_voice}！")
 
-        self.data_path = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_murasame_tts"
+        # ========== 数据目录与记忆 ==========
+        # 必须先定义 data_path，后面才能用它！
+        self.data_path = Path(get_astrbot_data_path()) / "memories"
         self.data_path.mkdir(parents=True, exist_ok=True)
+        self._cleanup_voice_cache()
+
+        # 本地记忆文件（按角色标识符区分，保留旧角色记忆）
+        self.memory_file = self.data_path / f"{self.character_key}DATA.json"
+
+        # ========== 删除指定记忆文件 ==========
+        delete_memory = config.get("delete_memory_file", "")
+        if delete_memory:
+            target_file = self.data_path / f"{delete_memory}DATA.json"
+            if target_file.exists():
+                try:
+                    target_file.unlink()
+                    logger.info(f"已成功删除角色记忆文件：{delete_memory}DATA.json")
+                except Exception as e:
+                    logger.error(f"删除记忆文件失败：{e}")
+            else:
+                logger.info(f"未找到要删除的记忆文件：{delete_memory}DATA.json")
+
+        # ========== 读取扫描开关配置 ==========
+        self.list_memory_files = config.get("list_memory_files", False)
+        
+        # ========== 扫描并列出所有记忆文件（打印到日志） ==========
+        if self.list_memory_files:
+            logger.info("【记忆文件扫描】正在扫描插件记忆目录...")
+            try:
+                if self.data_path.exists():
+                    # 遍历目录下的所有文件
+                    files = os.listdir(self.data_path)
+                    memory_files = [f for f in files if f.endswith("DATA.json")]
+                    if memory_files:
+                        logger.info(f"【记忆文件扫描】发现以下记忆文件：{', '.join(memory_files)}")
+                    else:
+                        logger.info("【记忆文件扫描】未发现任何记忆文件（当前角色记忆尚未创建）。")
+                else:
+                    logger.warning("【记忆文件扫描】记忆目录不存在。")
+            except Exception as e:
+                logger.error(f"【记忆文件扫描】扫描失败：{e}")
+
+    def _cleanup_voice_cache(self):
+        """清理过期的语音缓存文件，保留最多 max_voice_cache 个（增强版，防止文件被占用导致清理失败）"""
+        try:
+            # 获取所有生成的 wav 文件（包含 temp 和 combined）
+            cache_files = list(self.data_path.glob("*.wav"))
+            
+            if len(cache_files) <= self.max_voice_cache:
+                return
+            
+            # 按修改时间排序，最旧的排前面
+            cache_files.sort(key=lambda x: x.stat().st_mtime)
+            
+            # 删除最旧的文件，直到不超过设置的最大值
+            while len(cache_files) > self.max_voice_cache:
+                old_file = cache_files.pop(0)
+                try:
+                    old_file.unlink(missing_ok=True)
+                except PermissionError:
+                    # 如果文件被占用，等待 0.1 秒后重试删除
+                    import time
+                    time.sleep(0.1)
+                    try:
+                        os.remove(old_file)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"清理语音缓存失败: {e}")
 
     def _auto_start_and_switch_tts(self):
         """
@@ -270,7 +369,7 @@ class Main(Star):
         drive = target_dir[0].upper()
         if not Path(f"{drive}:/").exists():
             fallback_drive = None
-            for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
+            for letter in "DEFGHIJKLMNOPQRSTUVWXYZAB":
                 if Path(f"{letter}:/").exists():
                     fallback_drive = letter
                     break
@@ -318,7 +417,7 @@ class Main(Star):
                     ref_audio = None
                     prompt_text = ""
 
-                    for ext in ['.mp3', '.wav']:
+                    for ext in ['.mp3', '.wav', '.ogg', '.flac', '.m4a']:
                         try:
                             candidate = folder / f"ref{ext}"
                             if candidate.exists():
@@ -369,12 +468,9 @@ class Main(Star):
     def _download_and_extract(self):
         """后台下载并解压语音包（奶奶的，加ssl下载嘿慢）"""
         try:
-            base_emotions = ["pingjing", "gaoxing", "haixiu", "shengqi", "jingya", "zhaoji"]
-            for path_to_check in [Path(self.download_path), Path(self.ref_audio_root)]:
-                if path_to_check and path_to_check.exists():
-                    if all((path_to_check / emo).exists() for emo in base_emotions):
-                        logger.info(f"检测到语音包已在 {path_to_check} 安装，跳过下载。")
-                        return
+            if self.emotions:
+                logger.info(f"检测到已有情绪配置 {list(self.emotions.keys())}，跳过下载。")
+                return
 
             logger.info("开始下载丛雨语气包...")
             parts = self.download_url.rstrip('/').split('/')
@@ -475,86 +571,98 @@ class Main(Star):
     async def _get_llm_reply(self, event: AstrMessageEvent, user_text: str):
         try:
             emotion_keys = list(self.emotions.keys())
-            
-            # 用于存放真正传给模型的历史消息序列
+
+            # ========== 从本地文件读取历史 ==========
             history_messages = []
-            history_text = "暂无（这是第一句对话）"
+            task_context = ""
             
-            try:
-                conv_mgr = self.context.conversation_manager
-                umo = event.unified_msg_origin
-                curr_cid = await conv_mgr.get_curr_conversation_id(umo)
-                conversation = await conv_mgr.get_conversation(umo, curr_cid)
-                
-                if conversation and conversation.history:
-                    # 提取最近 6 条对话内容
-                    recent_history = conversation.history[-6:]
-                    history_parts = []
+            if self.memory_file.exists():
+                try:
+                    with open(self.memory_file, 'r', encoding='utf-8') as f:
+                        history_data = json.load(f)
+                    history_data = history_data.get("history", [])
                     
-                    for msg in recent_history:
-                        content = msg.content if hasattr(msg, 'content') else msg
-                        
-                        # 将 msg.role 转换为 Ollama 需要的 user/assistant
-                        role = "user" if msg.role == "user" else "assistant"
-                        
-                        text_content = ""
-                        try:
-                            if isinstance(content, list):
-                                for part in content:
-                                    if hasattr(part, 'text'):
-                                        text_content += part.text
-                            elif isinstance(content, str):
-                                text_content = content
-                            else:
-                                text_content = str(content)
-                        except Exception:
-                            text_content = str(content)
-                            
-                        if text_content.strip():
-                            truncated_text = text_content[:150]  # 防止单条过长
-                            history_parts.append(f"{'用户' if msg.role == 'user' else '丛雨'}: {truncated_text}")
-                            # 【核心修复】：将历史按真实顺序构建成对话消息列表
-                            history_messages.append({"role": role, "content": truncated_text})
-                            
-                    if history_parts:
-                        history_text = "\n".join(history_parts)
-            except Exception as e:
-                logger.warning(f"获取对话历史失败，跳过上下文注入: {e}")
-            
-            prompt = (
-                f"{self.persona_prompt}\n"
-                f"【最近对话历史摘要】:\n{history_text}\n\n"
-                f"【当前用户输入】: {user_text}\n\n"
-                f"【情绪可选列表】: {emotion_keys}。\n"
-                f"请严格遵守你在人格提示词中设定的【情绪判断规则】，结合上下文给出合理的情绪！"
-            )
+                    # 取最近 10 条作为上下文
+                    for msg in history_data[-10:]:
+                        role = msg.get("role", "user")
+                        content = str(msg.get("content", ""))
+                        if role not in ["user", "assistant"]:
+                            continue
+                        history_messages.append({"role": role, "content": content})
+                    
+                    # 扫描任务指令
+                    task_keywords = ["提醒", "记住", "要求", "命令", "叫我", "以后", "别忘了"]
+                    for msg in reversed(history_data):
+                        if msg.get("role") == "user":
+                            content = str(msg.get("content", ""))
+                            if any(kw in content for kw in task_keywords):
+                                task_context = content
+                                break
+                except Exception as e:
+                    logger.warning(f"读取本地记忆失败: {e}")
+            # ==========================================================
 
-            # 【核心修复】：组装完整的消息序列
-            # 1. system 包含角色设定和情绪规则
-            messages = [{"role": "system", "content": prompt}]
-            # 2. 将历史对话按真实顺序插入，让模型看懂前因后果
+            # ========== 组装消息序列 ==========
+            messages = [{"role": "system", "content": self.system_prompt}]
             messages.extend(history_messages)
-            # 3. 最后才是当前的用户输入
+            if task_context:
+                messages.append({"role": "user", "content": f"（重申之前的指令）{task_context}"})
             messages.append({"role": "user", "content": user_text})
+            # ==================================
 
+            # ====== 发送请求 ======
             payload = {
                 "model": self.llm_model_name,
                 "messages": messages,
                 "stream": False,
-                "think": False,
-                "format": "json",
+                "think": self.enable_think,
                 "options": {
                     "num_ctx": self.num_ctx,
                     "temperature": min(self.temperature, 1.0)
                 }
             }
 
-            # 动态读取 Ollama 地址
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(f"{self.ollama_base_url}/api/chat", json=payload)
-                data = resp.json()
+            async with httpx.AsyncClient(timeout=self.llm_timeout) as client:
+                if self.llm_backend == "openai":
+                    url = f"{self.llm_base_url}/chat/completions"
+                    api_key = self.llm_api_key or "EMPTY"
+                    payload = {
+                        "model": self.llm_model_name,
+                        "messages": messages,
+                        "stream": False,
+                        "response_format": None if self.enable_think else {"type": "json_object"},
+                        "temperature": min(self.temperature, 1.0),
+                        "max_tokens": 1200
+                    }
+                    
+                    if not self.enable_think:
+                        payload["response_format"] = {"type": "json_object"}
+                    
+                    resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {api_key}"})
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"]
+                else:
+                    resp = await client.post(f"{self.llm_base_url}/api/chat", json=payload)
+                    data = resp.json()
+                    # logger.info(f"【调试-Ollama原始返回】: {json.dumps(data, ensure_ascii=False)}")
+                    
+                    message = data["message"]
+                    thinking = message.get("thinking") or message.get("reasoning_content")
+                    if self.enable_think:
+                        if thinking:
+                            logger.info(f"【模型思考】: {thinking}")
+                        else:
+                            logger.info("【模型思考】: 模型本次未返回思考内容（请检查是否开启了Think或模型本身不支持）")
+                    content = message.get("content") or ""
 
-            content = data["message"]["content"].strip()
+            # ====== 清理思考内容中的非 JSON 部分 ======
+            if self.enable_think:
+                start = content.find('{')
+                end = content.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    content = content[start:end+1]
+
+            content = content.strip()
             content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
             data = json.loads(content)
 
@@ -571,8 +679,11 @@ class Main(Star):
             lang_list = []
             emo_list = []
             for s in sentences:
-                zh_list.append(s.get("zh", ""))
-                lang_list.append(s.get(self.text_lang, ""))
+                zh_text_cur = str(s.get("zh", "")).strip()
+                lang_text_cur = str(s.get(self.text_lang, "")).strip()
+                
+                zh_list.append(zh_text_cur)
+                lang_list.append(lang_text_cur)
                 emo = s.get("emotion", self.default_voice)
                 if emo not in self.emotions:
                     emo = self.default_voice
@@ -585,7 +696,7 @@ class Main(Star):
             zh_text = "".join(zh_list)
             return zh_text, lang_list, emo_list
         except Exception as e:
-            logger.error(f"LLM 处理失败: {e}")
+            logger.error(f"LLM 处理失败: {type(e).__name__}: {e}")
             return None, None, None
 
     async def _synthesize_sentence(self, text: str, emotion: str):
@@ -642,6 +753,7 @@ class Main(Star):
                     if resp.status_code == 200:
                         temp_path = self.data_path / f"temp_{emotion}_{int(time.time()*1000)}.wav"
                         temp_path.write_bytes(resp.content)
+                        self._cleanup_voice_cache()
                         return temp_path
                     else:
                         # 如果服务端明确返回了错误码（如400），无需重试，直接报错
@@ -769,7 +881,8 @@ class Main(Star):
                 out.setsampwidth(sampwidth)
                 out.setframerate(sample_rate)
                 out.writeframes(all_audio.tobytes())
-                
+            # 新增：自动清理旧缓存
+            self._cleanup_voice_cache()
             return str(output_path)
             
         except ImportError:
@@ -800,6 +913,7 @@ class Main(Star):
         if not user_text:
             return
 
+        # 获取中文、日语、情绪
         if self.use_llm_judge:
             zh_text, ja_list, emo_list = await self._get_llm_reply(event, user_text)
         else:
@@ -809,14 +923,37 @@ class Main(Star):
             yield event.plain_result("模型生成失败，请检查 AstrBot 配置。")
             return
 
-        # 打印完整的情绪和分句信息，方便你确认大模型到底生成了什么
+        # ========== 将用户输入和本插件回复保存到本地文件 ==========
+        try:
+            history_data = []
+            if self.memory_file.exists():
+                with open(self.memory_file, 'r', encoding='utf-8') as f:
+                    history_data = json.load(f)
+                history_data = history_data.get("history", [])
+            else:
+                history_data = []
+            
+            history_data.append({"role": "user", "content": user_text})
+            history_data.append({"role": "assistant", "content": zh_text})
+            
+            # 仅保留最近 60 条（30轮对话）
+            history_data = history_data[-60:]
+            
+            # 保存时附带当前角色名，方便识别
+            with open(self.memory_file, 'w', encoding='utf-8') as f:
+                json.dump({"character_name": self.character_name, "history": history_data}, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"保存本地记忆失败: {e}")
+        # =======================================================
+
+        # 打印完整的情绪和分句信息
         logger.info(f"模型输出分句: {ja_list}")
         logger.info(f"模型输出情绪: {emo_list}")
 
         temp_wavs = []
         failed_sentences = []
         
-        # 逐句合成并收集，记录失败的句子
+        # 逐句合成并收集
         for i in range(len(ja_list)):
             temp_wav = await self._synthesize_sentence(ja_list[i], emo_list[i])
             if temp_wav:
@@ -832,12 +969,15 @@ class Main(Star):
         if combined_audio:
             chain = [Plain(zh_text), Record(file=combined_audio)]
             yield event.chain_result(chain)
+            # 清理临时文件
             for temp_wav in temp_wavs:
                 try:
                     temp_wav.unlink(missing_ok=True)
                 except:
                     pass
         else:
-            # 如果全部合成失败，就只发文本，至少保证对话顺畅
             logger.error("所有 TTS 句子均合成失败，已降级为纯文本回复。")
             yield event.plain_result(zh_text)
+            
+        # 最后停止事件，避免主程序重复回复
+        event.stop_event()
