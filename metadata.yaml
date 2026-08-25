@@ -2,7 +2,7 @@ name: Local_TTS_Voice_Modulation
 display_name: 本地TTS语气变化
 short_desc: 修复WebUI只能搜索到某一个角色的bug。当你发现有bug时，可前往本插件的仓库检查最新版哦。
 desc: WebUI 更新！强烈建议更新此至版本！基于 AstrBot 的智能情绪 TTS 插件。它调用模型自动判断语境情绪，自动匹配“高兴、害羞”等对应的参考音频，合成极具感情色彩的语音。支持自动扫描外部目录，参数高度可调，轻松适配大众用户。
-version: v1.1.5.post1
+version: v1.1.6
 author: slpk1ng
 support_platforms:
   - qq_official
