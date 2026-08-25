@@ -188,9 +188,10 @@ class Main(Star):
         """列出所有记忆文件及最后一句对话"""
         memories = []
         if self.data_path.exists():
-            for f in self.data_path.glob(f"{self.character_key}_*.json"):
+            # 修改这里：扫描所有符合命名格式的记忆文件（不区分角色）
+            for f in self.data_path.glob("*_*.json"):
                 try:
-                    # 获取角色名（从文件名前缀提取，例如 murasame_group_xxx）
+                    # 从文件名前缀提取角色名（例如 nahida, murasame）
                     role_name = f.name.split("_")[0] if "_" in f.name else "未知"
                     with open(f, 'r', encoding='utf-8') as fh:
                         data = json.load(fh)
@@ -203,7 +204,7 @@ class Main(Star):
                     memories.append({
                         "filename": f.name,
                         "last_sentence": last_sentence,
-                        "modified_time": f.stat().st_mtime,  # 文件修改时间戳
+                        "modified_time": f.stat().st_mtime,
                         "role_name": role_name
                     })
                 except Exception as e:
