@@ -253,33 +253,46 @@ class Main(Star):
             # 等待下一个检查周期
             time.sleep(self.update_check_interval_hours * 3600)
 
-    # ================== 原有方法 ==================
     def _cleanup_voice_cache(self):
-        """清理过期的语音缓存文件，保留最多 max_voice_cache 个（增强版，防止文件被占用导致清理失败）"""
+        """
+        清理过期的语音缓存文件，只保留最近 max_voice_cache 个。
+        改进：
+        1. 只清理 temp_*.wav 和 combined_*.wav，不触碰记忆文件。
+        2. 增加重命名探测占用，解决文件被占用无法删除的问题。
+        3. 增加更详细的日志，方便观察清理效果。
+        """
         try:
-            # 获取所有生成的 wav 文件（包含 temp 和 combined）
-            cache_files = list(self.data_path.glob("*.wav"))
-
+            # 获取所有临时音频和合并音频
+            cache_files = list(self.data_path.glob("temp_*.wav")) + list(self.data_path.glob("combined_*.wav"))
+            
             if len(cache_files) <= self.max_voice_cache:
+                logger.debug(f"语音缓存数量 {len(cache_files)}，无需清理。")
                 return
-
+            
             # 按修改时间排序，最旧的排前面
             cache_files.sort(key=lambda x: x.stat().st_mtime)
-
-            # 删除最旧的文件，直到不超过设置的最大值
-            while len(cache_files) > self.max_voice_cache:
-                old_file = cache_files.pop(0)
+            
+            # 计算需要删除的文件数量
+            to_delete = len(cache_files) - self.max_voice_cache
+            deleted_count = 0
+            
+            for old_file in cache_files[:to_delete]:
                 try:
-                    old_file.unlink(missing_ok=True)
+                    # 先尝试重命名（若成功说明未被占用，可安全删除）
+                    temp_name = old_file.with_suffix('.tmp_del')
+                    old_file.rename(temp_name)
+                    temp_name.unlink(missing_ok=True)
+                    deleted_count += 1
                 except PermissionError:
-                    # 如果文件被占用，等待 0.1 秒后重试删除
-                    time.sleep(0.1)
-                    try:
-                        os.remove(old_file)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    logger.warning(f"文件 {old_file.name} 被占用，跳过删除")
+                except Exception as e:
+                    logger.warning(f"删除 {old_file.name} 时异常: {e}")
+            
+            if deleted_count > 0:
+                logger.info(f"已清理 {deleted_count} 个缓存文件，当前剩余 {len(cache_files) - deleted_count} 个")
+            else:
+                logger.warning("本次未删除任何缓存文件（可能全部被占用）")
+                
         except Exception as e:
             logger.error(f"清理语音缓存失败: {e}")
 
@@ -1071,4 +1084,5 @@ class Main(Star):
             yield event.plain_result(zh_text)
 
         # 最后停止事件，避免主程序重复回复
+        self._cleanup_voice_cache()
         event.stop_event()

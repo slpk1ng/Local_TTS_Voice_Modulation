@@ -7,11 +7,12 @@ author: slpk1ng
 support_platforms:
   - qq_official
 logo: "./logo.png"
-category: tts语气变化
+category: TTS语气变化
 repo: https://github.com/slpk1ng/Local_TTS_Voice_Modulation
 tags:
-  -工具
-  -tts语气变化
-  -语音
-  -本地
-  -tts
+  TTS
+  TTS语气变化
+  文字转语音
+  工具
+  语音
+  本地
