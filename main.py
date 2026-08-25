@@ -1,21 +1,12 @@
-import urllib.request
 import hashlib
 import time
 import json
 import os
 import re
-import zipfile
-import shutil
 import threading
 import wave
 import subprocess
-import asyncio  # 新增
-try:
-    import yaml
-except ImportError:
-    yaml = None
-
-from astrbot.core.agent.message import AssistantMessageSegment, UserMessageSegment, TextPart
+import asyncio
 from pathlib import Path
 import httpx
 from astrbot.api.event import filter, AstrMessageEvent
@@ -77,6 +68,9 @@ class Main(Star):
         # ========== 角色与提示词配置 ==========
         self.character_name = config.get("character_name", "丛雨")
         self.character_key = config.get("character_key", "murasame")
+        if not re.match(r'^[A-Za-z0-9_]+$', self.character_key):
+            logger.warning(f"character_key 含有非法字符，已强制为默认值。")
+            self.character_key = "murasame"
 
         # 将记忆文件存放到全局 data 目录，防止卸载插件时被清空！
         memory_root = Path(get_astrbot_data_path()) / "memories"
@@ -91,13 +85,6 @@ class Main(Star):
         # 组装成固定系统提示词
         self.system_prompt = f"{self.personality_prompt}\n{self.json_prompt}\n{self.supplement_prompt}"
         self.system_prompt_hash = hashlib.md5(self.system_prompt.encode('utf-8')).hexdigest()
-
-        # ========== 下载功能配置 ==========
-        self.download_path = self._resolve_tts_path(config.get("download_path", ""))
-        self.download_url = config.get("download_url", "https://github.com/slpk1ng/Murasame-s-tone-shifts")
-
-        if config.get("trigger_download", False):
-            threading.Thread(target=self._download_and_extract, daemon=True).start()
 
         # ========== 自动启动 TTS 服务 ==========
         if self.auto_start_tts:
@@ -152,31 +139,25 @@ class Main(Star):
         # ========== 删除指定记忆文件 ==========
         delete_memory = config.get("delete_memory_file", "")
         if delete_memory:
-            target_file = self.data_path / f"{delete_memory}DATA.json"
-            if target_file.exists():
-                try:
-                    target_file.unlink()
-                    logger.info(f"已成功删除角色记忆文件：{delete_memory}DATA.json")
-                except Exception as e:
-                    logger.error(f"删除记忆文件失败：{e}")
+            if not re.match(r'^[A-Za-z0-9_]+$', delete_memory):
+                logger.error(f"delete_memory_file 含非法字符，拒绝删除。")
             else:
-                logger.info(f"未找到要删除的记忆文件：{delete_memory}DATA.json")
+                target_file = self.data_path / f"{delete_memory}DATA.json"
+                target_resolved = target_file.resolve()
+                if self.data_path.resolve() in target_resolved.parents:
+                    if target_file.exists():
+                        try:
+                            target_file.unlink()
+                            logger.info(f"已成功删除角色记忆文件：{delete_memory}DATA.json")
+                        except Exception as e:
+                            logger.error(f"删除记忆文件失败：{e}")
+                    else:
+                        logger.info(f"未找到要删除的记忆文件：{delete_memory}DATA.json")
+                else:
+                    logger.error("目标文件不在数据目录内，拒绝删除。")
 
-        # ========== 读取扫描开关配置 ==========
         self.list_memory_files = config.get("list_memory_files", False)
-        self.current_version = self._get_current_version()
-        # ========== 自动更新检查配置 ==========
-        self.auto_update_check = config.get("auto_update_check", True)
-        self.update_check_interval_hours = config.get("update_check_interval_hours", 1)
-        self.update_available = False   # 是否发现新版本
-        self.update_info = None         # 存储新版本信息（tag, url）
-        self.update_reminded = False    # 是否已提醒过用户（避免重复提醒）
 
-        # 启动自动检查线程
-        if self.auto_update_check:
-            threading.Thread(target=self._auto_update_check_loop, daemon=True).start()
-
-        # ========== 扫描并列出所有记忆文件（打印到日志） ==========
         if self.list_memory_files:
             logger.info("【记忆文件扫描】正在扫描插件记忆目录...")
             try:
@@ -192,66 +173,6 @@ class Main(Star):
                     logger.warning("【记忆文件扫描】记忆目录不存在。")
             except Exception as e:
                 logger.error(f"【记忆文件扫描】扫描失败：{e}")
-
-    # ================== 版本管理相关 ==================
-    def _get_current_version(self):
-        """从 metadata.yaml 读取插件版本，失败则回退到硬编码"""
-        try:
-            meta_path = Path(__file__).parent / "metadata.yaml"
-            if meta_path.exists() and yaml is not None:
-                with open(meta_path, 'r', encoding='utf-8') as f:
-                    meta = yaml.safe_load(f)
-                    version = str(meta.get('version', '1.0.0'))
-                    return version
-        except Exception as e:
-            logger.warning(f"读取 metadata.yaml 失败，使用默认版本: {e}")
-        return "1.1.2"  # 默认版本，实际会从 metadata 读取
-
-    async def _check_update(self):
-        """从 GitHub API 获取最新 Release 版本号及链接"""
-        try:
-            async with httpx.AsyncClient(timeout=10, verify=False) as client:
-                resp = await client.get(
-                    "https://api.github.com/repos/slpk1ng/Local_TTS_Voice_Modulation/releases/latest"
-                )
-                if resp.status_code != 200:
-                    logger.error(f"GitHub API 返回错误: {resp.status_code}")
-                    return None, None
-                data = resp.json()
-                latest_tag = data.get('tag_name', '')
-                release_url = data.get('html_url', 'https://github.com/slpk1ng/Local_TTS_Voice_Modulation/releases')
-                return latest_tag, release_url
-        except Exception as e:
-            logger.error(f"检查更新异常: {e}")
-            return None, None
-
-    def _is_newer(self, latest: str, current: str) -> bool:
-        """简单的版本号比较（忽略 v 前缀）"""
-        try:
-            def parse_version(v):
-                v = v.lstrip('v')
-                return [int(x) for x in v.split('.')]
-            latest_ver = parse_version(latest)
-            cur_ver = parse_version(current)
-            return latest_ver > cur_ver
-        except Exception:
-            return latest != current
-
-    def _auto_update_check_loop(self):
-        """后台循环检查更新，按设定的间隔执行"""
-        while True:
-            try:
-                latest_tag, release_url = asyncio.run(self._check_update())
-                if latest_tag and self._is_newer(latest_tag, self.current_version):
-                    self.update_available = True
-                    self.update_info = (latest_tag, release_url)
-                else:
-                    self.update_available = False
-            except Exception as e:
-                logger.error(f"自动检查更新异常: {e}")
-            
-            # 等待下一个检查周期
-            time.sleep(self.update_check_interval_hours * 3600)
 
     def _cleanup_voice_cache(self):
         """
@@ -544,108 +465,6 @@ class Main(Star):
                 logger.info(f"成功自动扫描到 {len(emotions)} 个情绪配置: {list(emotions.keys())}")
         return emotions
 
-    def _download_and_extract(self):
-        """后台下载并解压语音包（奶奶的，加ssl下载嘿慢）"""
-        try:
-            if self.emotions:
-                logger.info(f"检测到已有情绪配置 {list(self.emotions.keys())}，跳过下载。")
-                return
-
-            logger.info("开始下载丛雨语气包...")
-            parts = self.download_url.rstrip('/').split('/')
-            repo_full_name = f"{parts[-2]}/{parts[-1]}"
-
-            zip_path = Path(self.download_path) / "yuqi.zip"
-            zip_path.parent.mkdir(parents=True, exist_ok=True)
-            download_success = False
-
-            # ============ 首选方案：使用 gh 命令（不传Tag，自动下载最新Release） ============
-            try:
-                logger.info("正在尝试使用 gh 命令下载最新版本...")
-                result = subprocess.run(
-                    ["gh", "release", "download", "-R", repo_full_name, "-p", "yuqi.zip", "--clobber", "-D", str(zip_path.parent)],
-                    capture_output=True, text=True, timeout=600
-                )
-                if result.returncode == 0 and zip_path.exists() and zip_path.stat().st_size > 0:
-                    logger.info("gh 下载成功！")
-                    download_success = True
-                else:
-                    logger.warning(f"gh 下载失败: {result.stderr}")
-            except FileNotFoundError:
-                logger.warning("未找到 gh 命令，切换为 curl 下载...")
-            except Exception as e:
-                logger.warning(f"gh 下载异常: {e}")
-
-            # ============ 备用方案：使用系统自带 curl（最新版本直链） ============
-            if not download_success:
-                try:
-                    logger.info("正在尝试使用 curl 命令下载...")
-                    download_url = f"https://github.com/{repo_full_name}/releases/latest/download/yuqi.zip"
-                    result = subprocess.run(
-                        ["curl", "-L", "-k", "--retry", "5", "--retry-delay", "3", "-C", "-", "-o", str(zip_path), download_url],
-                        capture_output=True, text=True, timeout=600
-                    )
-                    if result.returncode == 0 and zip_path.exists() and zip_path.stat().st_size > 0:
-                        logger.info("curl 下载成功！")
-                        download_success = True
-                    else:
-                        logger.warning(f"curl 下载失败: {result.stderr}")
-                except Exception as e:
-                    logger.warning(f"curl 下载异常: {e}")
-
-            # ============ 最终兜底：如果都失败，提示手动下载 ============
-            if not download_success:
-                logger.error("自动下载失败！请在浏览器或迅雷中手动下载 yuqi.zip 并解压到目标文件夹。")
-                return
-
-            # ============ 下载成功，开始解压 ============
-            logger.info("下载完成，正在解压...")
-            with zipfile.ZipFile(zip_path, "r") as z:
-                z.extractall(Path(self.download_path))
-
-            time.sleep(0.5)
-            try:
-                zip_path.unlink(missing_ok=True)
-            except PermissionError:
-                logger.warning("外部压缩包被占用，跳过删除（不影响使用）。")
-
-            root_dir = Path(self.download_path) / "Murasame-s-tone-shifts-main"
-            if root_dir.exists():
-                for inner_zip in root_dir.rglob("*.zip"):
-                    logger.info(f"发现内部压缩包 {inner_zip.name}，正在自动解压...")
-                    with zipfile.ZipFile(inner_zip, "r") as iz:
-                        iz.extractall(root_dir)
-                    time.sleep(0.2)
-                    try:
-                        inner_zip.unlink(missing_ok=True)
-                    except PermissionError:
-                        pass
-
-                for item in root_dir.iterdir():
-                    if item.name in ["main.py", "metadata.yaml", "_conf_schema.json", "requirements.txt"]:
-                        logger.warning(f"发现试图覆盖插件核心文件 {item.name}，已跳过。")
-                        continue
-                    target = Path(self.download_path) / item.name
-                    if not target.exists():
-                        shutil.move(str(item), str(target))
-
-                try:
-                    root_dir.rmdir()
-                except OSError:
-                    pass
-
-            actual_path = Path(self.download_path)
-            if (actual_path / "pingjing").exists() or (actual_path / "ref").exists():
-                pass
-            elif (actual_path / "Murasame-s-tone-shifts-main").exists():
-                actual_path = actual_path / "Murasame-s-tone-shifts-main"
-
-            logger.info(f"语音包下载并解压完成！")
-            logger.info(f"重要提示：请前往插件设置，将【参考音频根目录】填写为 {actual_path}\\yuqi，并重载插件。")
-
-        except Exception as e:
-            logger.error(f"语音包下载或解压失败: {e}")
-
     async def _get_llm_reply(self, event: AstrMessageEvent, user_text: str):
         try:
             emotion_keys = list(self.emotions.keys())
@@ -669,7 +488,7 @@ class Main(Star):
                         history_messages.append({"role": role, "content": content})
 
                     # 扫描任务指令
-                    task_keywords = ["提醒", "记住", "要求", "命令", "叫我", "以后", "别忘了"]
+                    task_keywords = ["提醒", "记住", "要求", "命令", "叫我", "以后", "别忘"]
                     for msg in reversed(history_data):
                         if msg.get("role") == "user":
                             content = str(msg.get("content", ""))
@@ -681,7 +500,9 @@ class Main(Star):
             # ==========================================================
 
             # ========== 组装消息序列 ==========
-            messages = [{"role": "system", "content": self.system_prompt}]
+            emotion_keys = list(self.emotions.keys())
+            system_content = f"{self.system_prompt}\n【情绪可选列表】{', '.join(emotion_keys)}"
+            messages = [{"role": "system", "content": system_content}]
             messages.extend(history_messages)
             if task_context:
                 messages.append({"role": "user", "content": f"（重申之前的指令）{task_context}"})
@@ -733,15 +554,20 @@ class Main(Star):
                     content = message.get("content") or ""
 
             # ====== 清理思考内容中的非 JSON 部分 ======
-            if self.enable_think:
-                start = content.find('{')
-                end = content.rfind('}')
-                if start != -1 and end != -1 and end > start:
-                    content = content[start:end+1]
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                content = json_match.group(0)
+            else:
+                logger.error("未找到 JSON 对象，可能模型输出为空或格式错误。")
+                return None, None, None
 
             content = content.strip()
             content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
-            data = json.loads(content)
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON 解析失败: {e}，原始内容: {content[:200]}")
+                return None, None, None
 
             if "sentences" in data:
                 sentences = data["sentences"]
@@ -988,33 +814,6 @@ class Main(Star):
     async def on_message(self, event: AstrMessageEvent):
         user_text = event.message_str
         if not user_text:
-            return
-
-        # 自动更新提醒（仅提醒一次）
-        if self.update_available and not self.update_reminded:
-            latest_tag, release_url = self.update_info
-            msg = (
-                f"🔔 插件有新版本 **{latest_tag}**（当前版本 {self.current_version}）\n"
-                f"可前往下载：{release_url}"
-            )
-            self.update_reminded = True
-            yield event.plain_result(msg)
-            # 注意：这里不 return，继续正常处理用户消息
-
-        # 检查更新指令（手动触发）
-        if user_text.strip() in ["检查更新", "checkupdate", "check update", "更新检查", "/checkupdate"]:
-            latest_tag, release_url = await self._check_update()
-            if latest_tag:
-                if self._is_newer(latest_tag, self.current_version):
-                    msg = (
-                        f"发现新版本 **{latest_tag}**（当前版本 {self.current_version}）\n"
-                        f"是否前往下载？点击链接即可跳转：\n{release_url}"
-                    )
-                    yield event.plain_result(msg)
-                else:
-                    yield event.plain_result(f"当前已是最新版本（{self.current_version}）。")
-            else:
-                yield event.plain_result("检查更新失败，请稍后再试。")
             return
 
         # 获取中文、日语、情绪
