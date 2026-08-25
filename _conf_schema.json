@@ -1,4 +1,16 @@
 {
+"auto_update_check": {
+  "description": "启用自动检查更新",
+  "hint": "开启后，插件会按设定间隔自动检查 GitHub 是否有新版本，并在聊天中提醒。",
+  "type": "bool",
+  "default": true
+},
+"update_check_interval_hours": {
+  "description": "自动检查更新间隔（小时）",
+  "hint": "默认 1 小时。建议至少 0.5 小时，避免频繁请求 API。",
+  "type": "int",
+  "default": 1
+},
   "llm_model_name": {
     "description": "【必填】大语言模型 (LLM) 名称",
     "hint": "请填写本地 Ollama 中已部署的模型名称（可通过命令行 ollama list 查看），例如 qwen3.5:4b、qwen3:8b 或 deepseek-r1:7b 等。",

@@ -9,6 +9,12 @@ import shutil
 import threading
 import wave
 import subprocess
+import asyncio  # 新增
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 from astrbot.core.agent.message import AssistantMessageSegment, UserMessageSegment, TextPart
 from pathlib import Path
 import httpx
@@ -30,7 +36,7 @@ class Main(Star):
         self.ref_audio_root = self._resolve_tts_path(config.get("ref_audio_root", ""))
         self.default_voice = config.get("default_voice", "pingjing")
         self.use_llm_judge = config.get("llm_judge", True)
-        
+
         # ========== LLM 配置 ==========
         self.llm_model_name = config.get("llm_model_name", "") or "qwen3.5:4b"
         self.llm_backend = config.get("llm_backend", "ollama")
@@ -71,7 +77,7 @@ class Main(Star):
         # ========== 角色与提示词配置 ==========
         self.character_name = config.get("character_name", "丛雨")
         self.character_key = config.get("character_key", "murasame")
-        
+
         # 将记忆文件存放到全局 data 目录，防止卸载插件时被清空！
         memory_root = Path(get_astrbot_data_path()) / "memories"
         memory_root.mkdir(parents=True, exist_ok=True)
@@ -81,7 +87,7 @@ class Main(Star):
         self.personality_prompt = config.get("personality_prompt", "【角色设定】你是丛雨，一位从神刀中获得人类生活的少女。你外表年幼，实际活了五百多年；性格天真活泼、略带古风和孩子气，内心温柔而坚强。你把用户视作重要的主人。中文对话中自称“本座”，称用户为“主人”；日语对话中自称“吾輩”，称用户为“ご主人”。你喜欢甜食、撒娇和被摸头，害怕幽灵，也不喜欢被叫作幼刀、钝刀或搓衣板。你偶尔嘴硬、吃醋或开小玩笑，但不会刻薄、控制或道德绑架主人。性格方面，丛雨表面元气开朗、充满活力，言行大多孩子气，爱撒娇，被主人摸头时会瞬间羞涩，她内在像个成年女性，常讲黄段子，把“情趣”等词挂在嘴边，还带点傲娇和爱吃醋。保持温柔、纯真、治愈并带一点幽默的语气。")
         self.json_prompt = config.get("json_prompt", "【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为：{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}, {\"zh\": \"第二句中文\", \"ja\": \"第二句日语\", \"emotion\": \"另一种情绪\"}]}，禁止输出任何解释或代码块。")
         self.supplement_prompt = config.get("supplement_prompt", "回答自然、简短，通常两到五句话；不要重复最近说过的话，不要加入动作、旁白或括号舞台说明。【情绪判断规则】请仔细阅读最近对话历史，结合你（角色）的性格特点来判断情绪！如果主人对你亲昵（如摸头、夸奖），即使你嘴上说“我才没有”，情绪也应该是害羞或高兴；如果主人故意逗你、骂你或惹你生气，情绪应该是生气或着急；如果只是平淡陈述，使用平静。【翻译一致性要求】必须表达完全相同的含义和语气，绝对不能出现含义相反或意思不匹配的翻译！【情绪连贯性强制规则】如果用户明确地侮辱、挑衅或激怒你（例如叫你“幼刀、搓衣板、飞机场”），你的情绪必须保持连贯。即：整句话所有分句的情绪必须都是“生气”或“着急”，绝对不能把后半句的“命令/威胁”改成“害羞”或“高兴”！除非你明确使用了“但是”、“不过”等转折词，否则不要轻易切换成其他情绪。")
-        
+
         # 组装成固定系统提示词
         self.system_prompt = f"{self.personality_prompt}\n{self.json_prompt}\n{self.supplement_prompt}"
         self.system_prompt_hash = hashlib.md5(self.system_prompt.encode('utf-8')).hexdigest()
@@ -89,7 +95,7 @@ class Main(Star):
         # ========== 下载功能配置 ==========
         self.download_path = self._resolve_tts_path(config.get("download_path", ""))
         self.download_url = config.get("download_url", "https://github.com/slpk1ng/Murasame-s-tone-shifts")
-        
+
         if config.get("trigger_download", False):
             threading.Thread(target=self._download_and_extract, daemon=True).start()
 
@@ -106,7 +112,7 @@ class Main(Star):
             # 如果用户关闭了“启用默认语气”，则清空自动扫描的结果，完全使用手动添加的语气
             if not config.get("enable_default_emotions", True):
                 self.emotions = {}
-            
+
             for item in emotions_list:
                 emotion_name = item.get("emotion_name", "")
                 ref_filename = item.get("ref_filename", "ref.mp3")
@@ -158,7 +164,18 @@ class Main(Star):
 
         # ========== 读取扫描开关配置 ==========
         self.list_memory_files = config.get("list_memory_files", False)
-        
+        self.current_version = self._get_current_version()
+        # ========== 自动更新检查配置 ==========
+        self.auto_update_check = config.get("auto_update_check", True)
+        self.update_check_interval_hours = config.get("update_check_interval_hours", 1)
+        self.update_available = False   # 是否发现新版本
+        self.update_info = None         # 存储新版本信息（tag, url）
+        self.update_reminded = False    # 是否已提醒过用户（避免重复提醒）
+
+        # 启动自动检查线程
+        if self.auto_update_check:
+            threading.Thread(target=self._auto_update_check_loop, daemon=True).start()
+
         # ========== 扫描并列出所有记忆文件（打印到日志） ==========
         if self.list_memory_files:
             logger.info("【记忆文件扫描】正在扫描插件记忆目录...")
@@ -176,18 +193,79 @@ class Main(Star):
             except Exception as e:
                 logger.error(f"【记忆文件扫描】扫描失败：{e}")
 
+    # ================== 版本管理相关 ==================
+    def _get_current_version(self):
+        """从 metadata.yaml 读取插件版本，失败则回退到硬编码"""
+        try:
+            meta_path = Path(__file__).parent / "metadata.yaml"
+            if meta_path.exists() and yaml is not None:
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta = yaml.safe_load(f)
+                    version = str(meta.get('version', '1.0.0'))
+                    return version
+        except Exception as e:
+            logger.warning(f"读取 metadata.yaml 失败，使用默认版本: {e}")
+        return "1.1.2"  # 默认版本，实际会从 metadata 读取
+
+    async def _check_update(self):
+        """从 GitHub API 获取最新 Release 版本号及链接"""
+        try:
+            async with httpx.AsyncClient(timeout=10, verify=False) as client:
+                resp = await client.get(
+                    "https://api.github.com/repos/slpk1ng/Local_TTS_Voice_Modulation/releases/latest"
+                )
+                if resp.status_code != 200:
+                    logger.error(f"GitHub API 返回错误: {resp.status_code}")
+                    return None, None
+                data = resp.json()
+                latest_tag = data.get('tag_name', '')
+                release_url = data.get('html_url', 'https://github.com/slpk1ng/Local_TTS_Voice_Modulation/releases')
+                return latest_tag, release_url
+        except Exception as e:
+            logger.error(f"检查更新异常: {e}")
+            return None, None
+
+    def _is_newer(self, latest: str, current: str) -> bool:
+        """简单的版本号比较（忽略 v 前缀）"""
+        try:
+            def parse_version(v):
+                v = v.lstrip('v')
+                return [int(x) for x in v.split('.')]
+            latest_ver = parse_version(latest)
+            cur_ver = parse_version(current)
+            return latest_ver > cur_ver
+        except Exception:
+            return latest != current
+
+    def _auto_update_check_loop(self):
+        """后台循环检查更新，按设定的间隔执行"""
+        while True:
+            try:
+                latest_tag, release_url = asyncio.run(self._check_update())
+                if latest_tag and self._is_newer(latest_tag, self.current_version):
+                    self.update_available = True
+                    self.update_info = (latest_tag, release_url)
+                else:
+                    self.update_available = False
+            except Exception as e:
+                logger.error(f"自动检查更新异常: {e}")
+            
+            # 等待下一个检查周期
+            time.sleep(self.update_check_interval_hours * 3600)
+
+    # ================== 原有方法 ==================
     def _cleanup_voice_cache(self):
         """清理过期的语音缓存文件，保留最多 max_voice_cache 个（增强版，防止文件被占用导致清理失败）"""
         try:
             # 获取所有生成的 wav 文件（包含 temp 和 combined）
             cache_files = list(self.data_path.glob("*.wav"))
-            
+
             if len(cache_files) <= self.max_voice_cache:
                 return
-            
+
             # 按修改时间排序，最旧的排前面
             cache_files.sort(key=lambda x: x.stat().st_mtime)
-            
+
             # 删除最旧的文件，直到不超过设置的最大值
             while len(cache_files) > self.max_voice_cache:
                 old_file = cache_files.pop(0)
@@ -195,7 +273,6 @@ class Main(Star):
                     old_file.unlink(missing_ok=True)
                 except PermissionError:
                     # 如果文件被占用，等待 0.1 秒后重试删除
-                    import time
                     time.sleep(0.1)
                     try:
                         os.remove(old_file)
@@ -207,12 +284,7 @@ class Main(Star):
             logger.error(f"清理语音缓存失败: {e}")
 
     def _auto_start_and_switch_tts(self):
-        """
-        一键启动本地 TTS 服务并自动加载模型（后台静默运行，不弹窗）。
-        1. 检测 TTS 服务是否在线，若在线则直接跳过，绝不重启。
-        2. 自动扫描模型文件夹，动态寻找 .ckpt 和 .pth 文件。
-        3. 调用 API 切换 GPT 和 SoVITS 权重。
-        """
+        """一键启动本地 TTS 服务并自动加载模型（后台静默运行，不弹窗）。"""
         try:
             # 1. 检查 TTS 服务是否在线（使用 /docs 探测）
             try:
@@ -222,31 +294,29 @@ class Main(Star):
                     return
             except Exception:
                 logger.info("未检测到 TTS 服务，准备自动启动...")
-                
+
                 # 2. 获取启动服务所需配置
                 if not self.tts_start_script or not self.model_dir:
                     logger.error("请先在插件设置中填写【TTS后端启动命令】和【模型文件夹路径】！")
                     return
-                
+
                 # 提取 Python 解释器路径和 api_v2.py 所在目录
                 root_dir = str(Path(self.tts_start_script).parent).replace("\\", "/")
                 python_exe = f"{root_dir}/runtime/python.exe"
-                
+
                 # 3. 强制后台静默运行（不弹窗）
                 creation_flags = subprocess.CREATE_NO_WINDOW
-                
+
                 # 启动命令
                 subprocess.Popen(
                     [python_exe, self.tts_start_script, "-a", "127.0.0.1", "-p", "9880", "-c", f"{root_dir}/GPT_SoVITS/configs/tts_infer.yaml"],
                     cwd=root_dir,
-                    # 强制接管标准输入，防止 TTS 继承 AstrBot 的无输入句柄并卡住
                     stdin=subprocess.DEVNULL,
-                    # 静默运行，丢弃输出
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     creationflags=creation_flags
                 )
-                
+
                 # 轮询等待服务启动
                 logger.info("正在等待 TTS 服务完全启动...（最长等待60秒）")
                 service_ready = False
@@ -260,7 +330,7 @@ class Main(Star):
                             break
                     except Exception:
                         continue
-                
+
                 if not service_ready:
                     logger.error("TTS 服务在60秒内未能成功启动。请检查【TTS后端启动命令】路径是否正确，或查看 AstrBot 日志！")
                     return
@@ -269,28 +339,28 @@ class Main(Star):
             gpt_file = None
             sovits_file = None
             model_dir_path = Path(self.model_dir)
-            
+
             if not model_dir_path.exists():
                 logger.error(f"模型文件夹不存在：{self.model_dir}，请检查路径。")
                 return
-                
+
             for f in model_dir_path.iterdir():
                 if f.suffix == ".ckpt" and gpt_file is None:
                     gpt_file = f.name
                 if f.suffix == ".pth" and sovits_file is None:
                     sovits_file = f.name
-            
+
             # 5. 校验文件是否完整
             if not gpt_file or not sovits_file:
                 logger.error(f"模型目录 {self.model_dir} 中未找到 .ckpt 或 .pth 文件！")
                 return
-                
+
             model_gpt = f"{self.model_dir}/{gpt_file}".replace("\\", "/")
             model_sovits = f"{self.model_dir}/{sovits_file}".replace("\\", "/")
             model_name = Path(gpt_file).stem
-            
+
             logger.info(f"正在加载模型权重 [ {model_name} ]...")
-            
+
             # 6. 调用 API 切换 GPT 权重
             try:
                 resp = httpx.get(f"{self.client_base_url}/set_gpt_weights", params={"weights_path": model_gpt}, timeout=120)
@@ -298,14 +368,14 @@ class Main(Star):
                     logger.info(f"[ {model_name} ] GPT 权重切换成功！")
                 else:
                     logger.error(f"GPT 权重切换失败: {resp.text}")
-                    
+
                 # 7. 调用 API 切换 SoVITS 权重
                 resp = httpx.get(f"{self.client_base_url}/set_sovits_weights", params={"weights_path": model_sovits}, timeout=120)
                 if resp.status_code == 200:
                     logger.info(f"[ {model_name} ] SoVITS 权重切换成功！")
                 else:
                     logger.error(f"SoVITS 权重切换失败: {resp.text}")
-                    
+
                 logger.info(f"[ {model_name} ] 模型加载完毕，可以开始使用了！")
             except Exception as e:
                 logger.error(f"调用 API 切换模型权重失败: {e}")
@@ -321,7 +391,7 @@ class Main(Star):
         2. 如果接口退出失败（超时/无响应），则通过命令行强制结束 Python 进程。
         """
         logger.info("正在关闭 TTS 后台服务...")
-        
+
         # 1. 尝试通过 /control?command=exit 优雅退出
         try:
             resp = httpx.get(f"{self.client_base_url}/control", params={"command": "exit"}, timeout=5)
@@ -329,24 +399,20 @@ class Main(Star):
                 logger.info("TTS 服务已通过接口优雅退出。")
                 return
         except Exception:
-            # 忽略因连接断开导致的异常，可能是服务已经退出了
             pass
-        
+
         # 2. 优雅退出失败（或服务未响应），使用 taskkill 强制结束进程
         try:
-            import subprocess
-            # 在 Windows 上通过端口找到占用 9880 的进程 PID，并强制结束
             result = subprocess.run(
                 ["netstat", "-ano"], capture_output=True, text=True, encoding='utf-8', errors='ignore'
             )
             pids = set()
             for line in result.stdout.splitlines():
                 if ":9880" in line and "LISTENING" in line:
-                    # 提取最后一列的 PID
                     parts = line.split()
                     if parts:
                         pids.add(parts[-1])
-            
+
             if pids:
                 for pid in pids:
                     logger.info(f"发现 TTS 残留进程 (PID: {pid})，正在强制结束...")
@@ -483,7 +549,6 @@ class Main(Star):
             # ============ 首选方案：使用 gh 命令（不传Tag，自动下载最新Release） ============
             try:
                 logger.info("正在尝试使用 gh 命令下载最新版本...")
-                # 只要不带 tag 参数，gh 就会自动拉取最新的 Release！
                 result = subprocess.run(
                     ["gh", "release", "download", "-R", repo_full_name, "-p", "yuqi.zip", "--clobber", "-D", str(zip_path.parent)],
                     capture_output=True, text=True, timeout=600
@@ -575,13 +640,13 @@ class Main(Star):
             # ========== 从本地文件读取历史 ==========
             history_messages = []
             task_context = ""
-            
+
             if self.memory_file.exists():
                 try:
                     with open(self.memory_file, 'r', encoding='utf-8') as f:
                         history_data = json.load(f)
                     history_data = history_data.get("history", [])
-                    
+
                     # 取最近 10 条作为上下文
                     for msg in history_data[-10:]:
                         role = msg.get("role", "user")
@@ -589,7 +654,7 @@ class Main(Star):
                         if role not in ["user", "assistant"]:
                             continue
                         history_messages.append({"role": role, "content": content})
-                    
+
                     # 扫描任务指令
                     task_keywords = ["提醒", "记住", "要求", "命令", "叫我", "以后", "别忘了"]
                     for msg in reversed(history_data):
@@ -634,18 +699,17 @@ class Main(Star):
                         "temperature": min(self.temperature, 1.0),
                         "max_tokens": 1200
                     }
-                    
+
                     if not self.enable_think:
                         payload["response_format"] = {"type": "json_object"}
-                    
+
                     resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {api_key}"})
                     data = resp.json()
                     content = data["choices"][0]["message"]["content"]
                 else:
                     resp = await client.post(f"{self.llm_base_url}/api/chat", json=payload)
                     data = resp.json()
-                    # logger.info(f"【调试-Ollama原始返回】: {json.dumps(data, ensure_ascii=False)}")
-                    
+
                     message = data["message"]
                     thinking = message.get("thinking") or message.get("reasoning_content")
                     if self.enable_think:
@@ -681,7 +745,7 @@ class Main(Star):
             for s in sentences:
                 zh_text_cur = str(s.get("zh", "")).strip()
                 lang_text_cur = str(s.get(self.text_lang, "")).strip()
-                
+
                 zh_list.append(zh_text_cur)
                 lang_list.append(lang_text_cur)
                 emo = s.get("emotion", self.default_voice)
@@ -711,7 +775,7 @@ class Main(Star):
 
         ref_path = emotion_data["ref_path"]
         prompt_text = emotion_data["prompt_text"]
-        
+
         # 过滤掉纯标点、空字符，防止 api_v2.py 报 400
         clean_text = re.sub(r'^[\s。，！？、,.!?…～~]+$', '', text)
         if not clean_text:
@@ -747,7 +811,7 @@ class Main(Star):
         for attempt in range(max_retries):
             try:
                 logger.info(f"正在合成: 情绪={emotion} | 文本={clean_text} | 参考音频={ref_path} (尝试 {attempt + 1}/{max_retries})")
-                
+
                 async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                     resp = await client.get(f"{self.client_base_url}/tts", params=params)
                     if resp.status_code == 200:
@@ -759,21 +823,21 @@ class Main(Star):
                         # 如果服务端明确返回了错误码（如400），无需重试，直接报错
                         logger.error(f"TTS 合成失败: {resp.status_code} - {resp.text} | 文本={clean_text}")
                         return None
-                        
+
             except httpx.ReadTimeout:
                 # 超时错误，通常是因为服务还在处理上一句，等待后重试
                 error_msg = "TTS 请求超时"
                 logger.warning(f"TTS 连接异常 ({error_msg})，等待 {retry_delay} 秒后重试... | 文本={clean_text}")
                 await asyncio.sleep(retry_delay)
                 retry_delay += 1.0  # 递增等待时间
-                
+
             except httpx.ConnectError:
                 # 连接被拒绝（可能是服务在重启），等待后重试
                 error_msg = "TTS 连接被拒绝"
                 logger.warning(f"TTS 连接异常 ({error_msg})，等待 {retry_delay} 秒后重试... | 文本={clean_text}")
                 await asyncio.sleep(retry_delay)
                 retry_delay += 1.0
-                
+
             except Exception as exc:
                 # 捕获其他所有异常，并确保错误信息不为空
                 error_msg = str(exc) if str(exc) else type(exc).__name__
@@ -793,9 +857,9 @@ class Main(Star):
         """
         if not wav_paths:
             return None
-            
+
         output_path = self.data_path / f"combined_{int(time.time() * 1000)}.wav"
-        
+
         # ================== 开关关闭：直接拼接 ==================
         if not self.voice_transition:
             try:
@@ -811,12 +875,12 @@ class Main(Star):
             except Exception as e:
                 logger.error(f"合并音频失败: {e}")
                 return None
-        
+
         # ================== 开关开启：平滑渐变（可调呼吸间隙 + 可调余弦交叉渐变） ==================
         try:
             import numpy as np
             import wave
-            
+
             # 读取第一个音频的基本参数
             with wave.open(str(wav_paths[0]), 'rb') as wf:
                 params = wf.getparams()
@@ -824,18 +888,18 @@ class Main(Star):
                 n_channels = wf.getnchannels()
                 sampwidth = wf.getsampwidth()
                 all_frames = wf.readframes(wf.getnframes())
-                
+
             # 转换为 numpy 数组以便处理
             all_audio = np.frombuffer(all_frames, dtype=np.int16).copy().reshape(-1, n_channels)
-            
+
             # 【核心修改】：读取 WebUI 中自定义的呼吸间隙（默认 100ms）
             breathing_gap_ms = self.breathing_gap_ms
             breathing_gap_samples = int(sample_rate * breathing_gap_ms / 1000)
-            
+
             # 【核心修改】：读取 WebUI 中自定义的交叉渐变长度（默认 300ms）
             crossfade_ms = self.crossfade_ms
             crossfade_samples = int(sample_rate * crossfade_ms / 1000)
-            
+
             for i in range(1, len(wav_paths)):
                 # 读取下一段音频
                 with wave.open(str(wav_paths[i]), 'rb') as wf:
@@ -846,35 +910,35 @@ class Main(Star):
                         audio = np.frombuffer(frames, dtype=np.int16).copy().reshape(-1, n_channels)
                         all_audio = np.concatenate((all_audio, audio), axis=0)
                         continue
-                        
+
                     frames = wf.readframes(wf.getnframes())
                     audio = np.frombuffer(frames, dtype=np.int16).copy().reshape(-1, n_channels)
-                    
+
                 # 增加呼吸间隙
                 breathing_gap = np.zeros((breathing_gap_samples, n_channels), dtype=np.int16)
                 all_audio = np.concatenate((all_audio, breathing_gap), axis=0)
-                
+
                 # 如果音频过短，无法进行交叉渐变，直接拼接
                 if len(audio) < crossfade_samples:
                     all_audio = np.concatenate((all_audio, audio), axis=0)
                     continue
-                
+
                 # 平滑余弦渐变
                 fade_out = all_audio[-crossfade_samples:].astype(np.float32)
                 fade_in = audio[:crossfade_samples].astype(np.float32)
-                
+
                 # 生成平滑的余弦曲线渐变
                 fade_in_gradient = (1 - np.cos(np.linspace(0, np.pi, crossfade_samples))) / 2
                 fade_in_gradient = fade_in_gradient.reshape(-1, 1)
                 fade_out_gradient = 1.0 - fade_in_gradient
-                
+
                 # 混合重叠区域
                 mixed = fade_out * fade_out_gradient + fade_in * fade_in_gradient
-                
+
                 # 更新音频数组
                 all_audio[-crossfade_samples:] = mixed.astype(np.int16)
                 all_audio = np.concatenate((all_audio, audio[crossfade_samples:]), axis=0)
-                
+
             # 输出合并后的音频
             with wave.open(str(output_path), 'wb') as out:
                 out.setnchannels(n_channels)
@@ -884,7 +948,7 @@ class Main(Star):
             # 新增：自动清理旧缓存
             self._cleanup_voice_cache()
             return str(output_path)
-            
+
         except ImportError:
             # 如果没有安装 numpy，自动回退到最简单的拼接方式
             logger.warning("未安装 numpy，正在使用基础拼接。建议执行 pip install numpy 以启用平滑语气渐变。")
@@ -901,7 +965,7 @@ class Main(Star):
             except Exception as e:
                 logger.error(f"合并音频失败: {e}")
                 return None
-                
+
         except Exception as e:
             logger.error(f"合并音频失败: {e}")
             return None
@@ -911,6 +975,33 @@ class Main(Star):
     async def on_message(self, event: AstrMessageEvent):
         user_text = event.message_str
         if not user_text:
+            return
+
+        # 自动更新提醒（仅提醒一次）
+        if self.update_available and not self.update_reminded:
+            latest_tag, release_url = self.update_info
+            msg = (
+                f"🔔 插件有新版本 **{latest_tag}**（当前版本 {self.current_version}）\n"
+                f"可前往下载：{release_url}"
+            )
+            self.update_reminded = True
+            yield event.plain_result(msg)
+            # 注意：这里不 return，继续正常处理用户消息
+
+        # 检查更新指令（手动触发）
+        if user_text.strip() in ["检查更新", "checkupdate", "check update", "更新检查", "/checkupdate"]:
+            latest_tag, release_url = await self._check_update()
+            if latest_tag:
+                if self._is_newer(latest_tag, self.current_version):
+                    msg = (
+                        f"发现新版本 **{latest_tag}**（当前版本 {self.current_version}）\n"
+                        f"是否前往下载？点击链接即可跳转：\n{release_url}"
+                    )
+                    yield event.plain_result(msg)
+                else:
+                    yield event.plain_result(f"当前已是最新版本（{self.current_version}）。")
+            else:
+                yield event.plain_result("检查更新失败，请稍后再试。")
             return
 
         # 获取中文、日语、情绪
@@ -932,13 +1023,13 @@ class Main(Star):
                 history_data = history_data.get("history", [])
             else:
                 history_data = []
-            
+
             history_data.append({"role": "user", "content": user_text})
             history_data.append({"role": "assistant", "content": zh_text})
-            
+
             # 仅保留最近 60 条（30轮对话）
             history_data = history_data[-60:]
-            
+
             # 保存时附带当前角色名，方便识别
             with open(self.memory_file, 'w', encoding='utf-8') as f:
                 json.dump({"character_name": self.character_name, "history": history_data}, f, ensure_ascii=False, indent=2)
@@ -952,7 +1043,7 @@ class Main(Star):
 
         temp_wavs = []
         failed_sentences = []
-        
+
         # 逐句合成并收集
         for i in range(len(ja_list)):
             temp_wav = await self._synthesize_sentence(ja_list[i], emo_list[i])
@@ -960,7 +1051,7 @@ class Main(Star):
                 temp_wavs.append(temp_wav)
             else:
                 failed_sentences.append(ja_list[i])
-                
+
         if failed_sentences:
             logger.warning(f"以下句子合成失败（已在语音中跳过，但文本仍会发送）: {failed_sentences}")
 
@@ -978,6 +1069,6 @@ class Main(Star):
         else:
             logger.error("所有 TTS 句子均合成失败，已降级为纯文本回复。")
             yield event.plain_result(zh_text)
-            
+
         # 最后停止事件，避免主程序重复回复
         event.stop_event()
