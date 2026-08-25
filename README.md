@@ -157,11 +157,9 @@
 由于插件的 TTS 服务无法访问插件内部的隐藏目录，你必须将音频文件放在插件UI填写的“参考音频根目录”下。**强烈建议使用拼音以避免 Windows 乱码问题。**
 
 ```text
+以下是例子：
+
 D:/tts/yuqi/
-├── Modle/    (模型与启动文件夹)
-│   ├── murasame-gpt.ckpt              (GPT 模型权重)
-│   ├── murasame-sovits.pth            (SoVITS 模型权重)
-│   └── README.md
 ├── pingjing/           (平静情绪文件夹)
 │   ├── ref.wav         (参考音频)
 │   └── asr.txt         (音频对应的文本)
@@ -177,10 +175,10 @@ D:/tts/yuqi/
 ├── jingya/
 │   ├── ref.mp3
 │   └── asr.txt
-└── zhaoji/
-    ├── ref.mp3
-    └── asr.txt
-
+├── zhaoji/
+│   ├── ref.mp3
+│   └── asr.txt
+└── ...
 ```
 
 ## 📝 更新日志
