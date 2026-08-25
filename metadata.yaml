@@ -2,7 +2,7 @@ name: Local_TTS_Voice_Modulation
 display_name: 本地TTS语气变化
 short_desc: 增加可自定义的`模型可读上下文条数`、`是否启用插件默认语气`、`可自定义角色名称`、`大模型请求超时时间`、`开启深度思考`和`删除指定记忆文件`等多种新功能。插件内自带丛雨语气变化，（自动从github下载，GPT-Sovits需要自行下载）。当你发现有bug时，可前往本插件的仓库检查最新版哦。
 desc: 强烈建议更新此版本,基于 AstrBot 的智能情绪 TTS 插件。它调用模型自动判断语境情绪，自动匹配“高兴、害羞”等对应的参考音频，合成极具感情色彩的语音。支持自动扫描外部目录，参数高度可调，轻松适配大众用户。暂时只支持一键下载丛雨的语气包。
-version: v1.1.3_R
+version: v1.1.3.0
 author: slpk1ng
 support_platforms:
   - qq_official
