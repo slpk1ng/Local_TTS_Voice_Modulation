@@ -188,10 +188,8 @@ class Main(Star):
         """列出所有记忆文件及最后一句对话"""
         memories = []
         if self.data_path.exists():
-            # 修改这里：扫描所有符合命名格式的记忆文件（不区分角色）
             for f in self.data_path.glob("*_*.json"):
                 try:
-                    # 从文件名前缀提取角色名（例如 nahida, murasame）
                     role_name = f.name.split("_")[0] if "_" in f.name else "未知"
                     with open(f, 'r', encoding='utf-8') as fh:
                         data = json.load(fh)
