@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>角色记忆文件管理</title>
+    <style>
+        body { font-family: sans-serif; background: #f5f5f5; color: #333; padding: 20px; }
+        
+        .header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 20px;
+        }
+        h2 { margin: 0; }
+
+        .controls {
+            display: flex; gap: 10px; align-items: center;
+        }
+
+        select {
+            padding: 6px 12px; border-radius: 6px; border: 1px solid #ddd;
+            background: #fff; color: #333; cursor: pointer;
+        }
+
+        /* 聊天式长框列表 */
+        #fileList {
+            display: flex; flex-direction: column; gap: 4px;
+        }
+
+        .file-item {
+            display: flex; align-items: center;
+            background: #fff; border: 1px solid #ddd;
+            border-radius: 8px; padding: 12px;
+            cursor: pointer; transition: all 0.2s;
+        }
+
+        .file-item:hover { border-color: #2196F3; }
+
+        .file-item.selected {
+            border-color: #2196F3; background: #e3f2fd;
+        }
+
+        /* 左侧正方形勾选框 */
+        .checkbox {
+            width: 24px; height: 24px; flex-shrink: 0;
+            border: 2px solid #ddd; border-radius: 4px;
+            margin-right: 12px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 16px; color: white; user-select: none;
+            transition: background 0.2s, border-color 0.2s;
+        }
+
+        .file-item.selected .checkbox {
+            background: #2196F3; border-color: #2196F3;
+        }
+        .file-item.selected .checkbox::after { content: "✓"; }
+
+        .file-info {
+            flex-grow: 1; min-width: 0;
+        }
+
+        .file-name {
+            font-weight: bold; font-size: 15px; 
+            word-break: break-all;
+        }
+
+        .last-msg {
+            color: #888; font-size: 13px; margin-top: 4px; 
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+
+        /* 底部删除按钮 */
+        .delete-btn {
+            position: fixed; bottom: 30px; right: 30px;
+            background: #f44336; color: white; border: none;
+            padding: 15px 25px; border-radius: 30px; cursor: pointer;
+            font-size: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none;
+        }
+        .delete-btn.show { display: block; }
+
+        /* 弹窗（统一颜色，取消在左，确认在右） */
+        #modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); display: none; justify-content: center; align-items: center;
+        }
+        #modal {
+            background: #333; color: white; padding: 30px; border-radius: 10px;
+            text-align: center; min-width: 300px;
+        }
+        #modal h3 { margin-top: 0; }
+
+        .modal-actions {
+            margin-top: 20px; display: flex; justify-content: center; gap: 10px;
+        }
+        #cancel-btn, #confirm-btn {
+            background: #555; color: white; border: none; padding: 10px 20px;
+            border-radius: 5px; cursor: pointer; font-size: 16px;
+            transition: background 0.3s;
+        }
+        #cancel-btn { background: #777; }
+        #confirm-btn.ready { background: #f44336; }
+
+        #message { text-align: center; margin: 10px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>角色记忆文件管理</h2>
+        <div class="controls">
+            <select id="sort-select">
+                <option value="role">按角色名 (A~Z)</option>
+                <option value="newest">按最新对话</option>
+                <option value="oldest">按最旧对话</option>
+            </select>
+        </div>
+    </div>
+
+    <div id="message"></div>
+    <div id="fileList"></div>
+
+    <button class="delete-btn" id="deleteBtn">删除选中</button>
+
+    <div id="modal-overlay">
+        <div id="modal">
+            <h3>确认删除？</h3>
+            <p id="modal-text"></p>
+            <div class="modal-actions">
+                <button id="cancel-btn">取消</button>
+                <button id="confirm-btn">等待3秒</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedFiles = new Set();
+        let confirmTimer = null;
+        let memoriesData = [];
+        let currentSort = 'role'; // role, newest, oldest
+
+        const msgDiv = document.getElementById('message');
+        const sortSelect = document.getElementById('sort-select');
+
+        // 排序切换
+        sortSelect.addEventListener('change', (e) => {
+            currentSort = e.target.value;
+            renderList();
+        });
+
+        function showMessage(text, isError = false) {
+            msgDiv.style.color = isError ? 'red' : 'green';
+            msgDiv.textContent = text;
+            setTimeout(() => { msgDiv.textContent = ''; }, 5000);
+        }
+
+        function waitForBridge(timeout = 3000) {
+            return new Promise((resolve, reject) => {
+                const start = Date.now();
+                const check = () => {
+                    if (window.AstrBotPluginPage) {
+                        resolve(window.AstrBotPluginPage);
+                    } else if (Date.now() - start > timeout) {
+                        reject(new Error('Bridge 未就绪'));
+                    } else {
+                        setTimeout(check, 100);
+                    }
+                };
+                check();
+            });
+        }
+
+        async function loadList() {
+            try {
+                const bridge = window.AstrBotPluginPage;
+                const data = await bridge.apiGet('memory_manager/api/list');
+                memoriesData = data.memories || [];
+                renderList();
+            } catch (e) {
+                showMessage('加载失败：' + e.message, true);
+            }
+        }
+
+        function sortData() {
+            if (currentSort === 'role') {
+                memoriesData.sort((a, b) => (a.role_name || '').localeCompare(b.role_name || ''));
+            } else if (currentSort === 'newest') {
+                memoriesData.sort((a, b) => (b.modified_time || 0) - (a.modified_time || 0));
+            } else if (currentSort === 'oldest') {
+                memoriesData.sort((a, b) => (a.modified_time || 0) - (b.modified_time || 0));
+            }
+        }
+
+        function renderList() {
+            sortData();
+            const list = document.getElementById('fileList');
+            list.innerHTML = '';
+
+            if (memoriesData.length === 0) {
+                showMessage('暂无记忆文件');
+                return;
+            }
+
+            memoriesData.forEach(mem => {
+                const item = document.createElement('div');
+                item.className = 'file-item';
+                item.dataset.filename = mem.filename;
+
+                item.innerHTML = `
+                    <div class="checkbox"></div>
+                    <div class="file-info">
+                        <div class="file-name">${mem.filename}</div>
+                        <div class="last-msg">${mem.last_sentence || '（暂无对话）'}</div>
+                    </div>
+                `;
+
+                item.addEventListener('click', () => {
+                    const filename = mem.filename;
+                    if (selectedFiles.has(filename)) {
+                        selectedFiles.delete(filename);
+                        item.classList.remove('selected');
+                    } else {
+                        selectedFiles.add(filename);
+                        item.classList.add('selected');
+                    }
+                    updateDeleteBtn();
+                });
+
+                list.appendChild(item);
+            });
+        }
+
+        function updateDeleteBtn() {
+            const btn = document.getElementById('deleteBtn');
+            if (selectedFiles.size > 0) {
+                btn.classList.add('show');
+                btn.textContent = `删除选中 (${selectedFiles.size})`;
+            } else {
+                btn.classList.remove('show');
+            }
+        }
+
+        // 删除按钮点击
+        document.getElementById('deleteBtn').addEventListener('click', () => {
+            if (selectedFiles.size === 0) return;
+            document.getElementById('modal-overlay').style.display = 'flex';
+            document.getElementById('modal-text').innerText = `确定要删除选中的 ${selectedFiles.size} 个文件吗？`;
+            startCountdown();
+        });
+
+        function startCountdown() {
+            let count = 3;
+            const btn = document.getElementById('confirm-btn');
+            btn.classList.remove('ready');
+            btn.disabled = true;
+            btn.textContent = `等待 ${count} 秒`;
+            if (confirmTimer) clearInterval(confirmTimer);
+            confirmTimer = setInterval(() => {
+                count--;
+                if (count <= 0) {
+                    clearInterval(confirmTimer);
+                    btn.classList.add('ready');
+                    btn.disabled = false;
+                    btn.textContent = '确认删除';
+                } else {
+                    btn.textContent = `等待 ${count} 秒`;
+                }
+            }, 1000);
+        }
+
+        // 确认删除（取消在左，确认在右）
+        document.getElementById('confirm-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('confirm-btn');
+            if (btn.disabled) return;
+            const files = Array.from(selectedFiles);
+            try {
+                const bridge = window.AstrBotPluginPage;
+                const result = await bridge.apiPost('memory_manager/api/delete', { files: files });
+                if (result.success) {
+                    selectedFiles.clear();
+                    closeModal();
+                    loadList();
+                    showMessage('删除成功');
+                } else {
+                    showMessage('删除失败：' + (result.error || '未知错误'), true);
+                }
+            } catch (e) {
+                showMessage('请求失败：' + e.message, true);
+            }
+        });
+
+        // 取消删除
+        document.getElementById('cancel-btn').addEventListener('click', closeModal);
+        function closeModal() {
+            document.getElementById('modal-overlay').style.display = 'none';
+            if (confirmTimer) clearInterval(confirmTimer);
+        }
+
+        // 初始化
+        waitForBridge().then(loadList).catch(e => showMessage('初始化失败：' + e.message, true));
+    </script>
+</body>
+</html>

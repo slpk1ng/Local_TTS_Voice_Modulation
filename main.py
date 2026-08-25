@@ -7,6 +7,7 @@ import threading
 import wave
 import subprocess
 import asyncio
+from astrbot.api.web import json_response, request
 from pathlib import Path
 import httpx
 from astrbot.api.event import filter, AstrMessageEvent
@@ -14,6 +15,13 @@ from astrbot.api.star import Context, Star
 from astrbot.api.message_components import Record, Plain
 from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+def _is_reserved(path_obj: Path) -> bool:
+    """兼容 Python 3.13+ 的 os.path.isreserved() 和旧版 pathlib.is_reserved()"""
+    if hasattr(os.path, "isreserved"):
+        return os.path.isreserved(str(path_obj))
+    # 旧版 Python 兼容（忽略 Pylance 的弃用提示）
+    return path_obj.is_reserved()  # type: ignore[attr-defined]
 
 
 class Main(Star):
@@ -27,6 +35,7 @@ class Main(Star):
         self.ref_audio_root = self._resolve_tts_path(config.get("ref_audio_root", ""))
         self.default_voice = config.get("default_voice", "pingjing")
         self.use_llm_judge = config.get("llm_judge", True)
+        self.context = context
 
         # ========== LLM 配置 ==========
         self.llm_model_name = config.get("llm_model_name", "") or "qwen3.5:4b"
@@ -37,6 +46,7 @@ class Main(Star):
         self.history_length = config.get("history_length", 8)
 
         # ========== TTS 配置 ==========
+        self._tts_start_lock = threading.Lock()
         self.auto_start_tts = config.get("auto_start_tts", False)
         self.tts_start_script = config.get("tts_start_script", "")
         self.model_dir = config.get("model_dir", "")
@@ -75,7 +85,6 @@ class Main(Star):
         # 将记忆文件存放到全局 data 目录，防止卸载插件时被清空！
         memory_root = Path(get_astrbot_data_path()) / "memories"
         memory_root.mkdir(parents=True, exist_ok=True)
-        self.memory_file = memory_root / f"{self.character_key}DATA.json"
 
         # 人格提示词拆分（仅在启动时组装一次）
         self.personality_prompt = config.get("personality_prompt", "【角色设定】你是丛雨，一位从神刀中获得人类生活的少女。你外表年幼，实际活了五百多年；性格天真活泼、略带古风和孩子气，内心温柔而坚强。你把用户视作重要的主人。中文对话中自称“本座”，称用户为“主人”；日语对话中自称“吾輩”，称用户为“ご主人”。你喜欢甜食、撒娇和被摸头，害怕幽灵，也不喜欢被叫作幼刀、钝刀或搓衣板。你偶尔嘴硬、吃醋或开小玩笑，但不会刻薄、控制或道德绑架主人。性格方面，丛雨表面元气开朗、充满活力，言行大多孩子气，爱撒娇，被主人摸头时会瞬间羞涩，她内在像个成年女性，常讲黄段子，把“情趣”等词挂在嘴边，还带点傲娇和爱吃醋。保持温柔、纯真、治愈并带一点幽默的语气。")
@@ -133,46 +142,126 @@ class Main(Star):
         self.data_path.mkdir(parents=True, exist_ok=True)
         self._cleanup_voice_cache()
 
-        # 本地记忆文件（按角色标识符区分，保留旧角色记忆）
-        self.memory_file = self.data_path / f"{self.character_key}DATA.json"
+        # ========== 注册 WebUI API ==========
+        plugin_name = "Local_TTS_Voice_Modulation"  # 必须与 metadata.yaml 中的 name 一致
 
-        # ========== 删除指定记忆文件 ==========
-        delete_memory = config.get("delete_memory_file", "")
-        if delete_memory:
-            if not re.match(r'^[A-Za-z0-9_]+$', delete_memory):
-                logger.error(f"delete_memory_file 含非法字符，拒绝删除。")
-            else:
-                target_file = self.data_path / f"{delete_memory}DATA.json"
-                target_resolved = target_file.resolve()
-                if self.data_path.resolve() in target_resolved.parents:
-                    if target_file.exists():
-                        try:
-                            target_file.unlink()
-                            logger.info(f"已成功删除角色记忆文件：{delete_memory}DATA.json")
-                        except Exception as e:
-                            logger.error(f"删除记忆文件失败：{e}")
-                    else:
-                        logger.info(f"未找到要删除的记忆文件：{delete_memory}DATA.json")
-                else:
-                    logger.error("目标文件不在数据目录内，拒绝删除。")
+        try:
+            self.context.register_web_api(
+                f"/{plugin_name}/memory_manager/api/list",
+                self._api_list_memories,
+                ["GET"],
+                "获取记忆文件列表"
+            )
+            self.context.register_web_api(
+                f"/{plugin_name}/memory_manager/api/delete",
+                self._api_delete_memories,
+                ["POST"],
+                "删除选中的记忆文件"
+            )
+            logger.info("已注册 Memory Manager WebAPI。")
+        except Exception as e:
+            logger.error(f"注册 WebAPI 失败: {e}")
 
-        self.list_memory_files = config.get("list_memory_files", False)
+    def _get_memory_file(self, event: AstrMessageEvent) -> Path:
+        """根据会话类型（群聊/私聊）返回对应的记忆文件路径"""
+        # 尝试获取群 ID（群聊时返回群号，私聊时可能返回 None 或抛异常）
+        try:
+            group_id = event.get_group_id()
+        except Exception:
+            group_id = None
 
-        if self.list_memory_files:
-            logger.info("【记忆文件扫描】正在扫描插件记忆目录...")
+        if group_id:
+            session_id = f"group_{group_id}"
+        else:
             try:
-                if self.data_path.exists():
-                    # 遍历目录下的所有文件
-                    files = os.listdir(self.data_path)
-                    memory_files = [f for f in files if f.endswith("DATA.json")]
-                    if memory_files:
-                        logger.info(f"【记忆文件扫描】发现以下记忆文件：{', '.join(memory_files)}")
-                    else:
-                        logger.info("【记忆文件扫描】未发现任何记忆文件（当前角色记忆尚未创建）。")
-                else:
-                    logger.warning("【记忆文件扫描】记忆目录不存在。")
-            except Exception as e:
-                logger.error(f"【记忆文件扫描】扫描失败：{e}")
+                sender_id = event.get_sender_id()
+                session_id = f"private_{sender_id}"
+            except Exception:
+                # 如果无法获取，使用事件 ID 作为兜底（极少出现）
+                session_id = f"session_{id(event)}"
+
+        # 清理非法字符，确保安全
+        safe_session = re.sub(r'[^A-Za-z0-9_\-]', '_', session_id)
+        return self.data_path / f"{self.character_key}_{safe_session}.json"
+
+    async def _api_list_memories(self):
+        """列出所有记忆文件及最后一句对话"""
+        memories = []
+        if self.data_path.exists():
+            for f in self.data_path.glob(f"{self.character_key}_*.json"):
+                try:
+                    # 获取角色名（从文件名前缀提取，例如 murasame_group_xxx）
+                    role_name = f.name.split("_")[0] if "_" in f.name else "未知"
+                    with open(f, 'r', encoding='utf-8') as fh:
+                        data = json.load(fh)
+                    history = data.get("history", [])
+                    last_sentence = ""
+                    for msg in reversed(history):
+                        if msg.get("role") == "assistant":
+                            last_sentence = str(msg.get("content", ""))[:50]
+                            break
+                    memories.append({
+                        "filename": f.name,
+                        "last_sentence": last_sentence,
+                        "modified_time": f.stat().st_mtime,  # 文件修改时间戳
+                        "role_name": role_name
+                    })
+                except Exception as e:
+                    logger.warning(f"读取记忆文件 {f.name} 失败: {e}")
+        return json_response({"memories": memories})
+
+    async def _api_delete_memories(self):
+        """删除选中的记忆文件（带安全校验）"""
+        try:
+            payload = await request.json(default={})
+            filenames = payload.get("files", [])
+            deleted = []
+            for filename in filenames:
+                if not re.match(r'^[A-Za-z0-9_\-]+\.json$', filename):
+                    logger.warning(f"非法文件名，拒绝删除: {filename}")
+                    continue
+                target = (self.data_path / filename).resolve()
+                if self.data_path.resolve() in target.parents and target.exists():
+                    try:
+                        target.unlink()
+                        deleted.append(filename)
+                    except Exception as e:
+                        logger.error(f"删除失败 {filename}: {e}")
+            return json_response({"success": True, "deleted": deleted})
+        except Exception as e:
+            logger.error(f"删除请求解析失败: {e}")
+            return json_response({"success": False, "error": str(e)}, status_code=400)
+
+    def _migrate_legacy_memory(self, event: AstrMessageEvent):
+        """将旧的统一记忆文件迁移到当前会话的记忆文件"""
+        legacy_file = self.data_path / f"{self.character_key}DATA.json"
+        if not legacy_file.exists():
+            return
+
+        current_file = self._get_memory_file(event)
+        if current_file.exists():
+            # 当前会话已有记忆，不覆盖，仅提示
+            logger.info("检测到旧记忆文件，但当前会话已有独立记忆，跳过迁移。")
+            return
+
+        try:
+            with open(legacy_file, 'r', encoding='utf-8') as f:
+                legacy_data = json.load(f)
+            history = legacy_data.get("history", [])
+            character_name = legacy_data.get("character_name", self.character_name)
+
+            # 写入当前会话文件
+            with open(current_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "character_name": character_name,
+                    "history": history
+                }, f, ensure_ascii=False, indent=2)
+
+            # 删除旧文件
+            legacy_file.unlink()
+            logger.info(f"已迁移旧记忆文件到 {current_file.name}，并删除旧文件。")
+        except Exception as e:
+            logger.error(f"迁移旧记忆文件失败: {e}")
 
     def _cleanup_voice_cache(self):
         """
@@ -218,7 +307,10 @@ class Main(Star):
             logger.error(f"清理语音缓存失败: {e}")
 
     def _auto_start_and_switch_tts(self):
-        """一键启动本地 TTS 服务并自动加载模型（后台静默运行，不弹窗）。"""
+        if not self._tts_start_lock.acquire(blocking=False):
+            logger.info("TTS 服务已在启动中，跳过重复启动。")
+            return
+    
         try:
             # 1. 检查 TTS 服务是否在线（使用 /docs 探测）
             try:
@@ -316,6 +408,8 @@ class Main(Star):
 
         except Exception as e:
             logger.error(f"一键启动流程出现异常: {e}")
+        finally:
+            self._tts_start_lock.release()
 
     async def terminate(self):
         """
@@ -398,7 +492,7 @@ class Main(Star):
 
         base_folder = Path(self.ref_audio_root)
         IGNORED_DIRS = {"WpSystem", "System Volume Information", "$Recycle.Bin", "Recovery", "PerfLogs", "Config.Msi"}
-        if base_folder.exists() and (base_folder.is_reserved() or base_folder.name in IGNORED_DIRS):
+        if base_folder.exists() and (_is_reserved(base_folder) or base_folder.name in IGNORED_DIRS):
             logger.error(f"错误：{self.ref_audio_root} 是 Windows 系统保护目录，无法访问！")
             return emotions
 
@@ -467,16 +561,17 @@ class Main(Star):
 
     async def _get_llm_reply(self, event: AstrMessageEvent, user_text: str):
         try:
+            self._migrate_legacy_memory(event)
             emotion_keys = list(self.emotions.keys())
 
             # ========== 从本地文件读取历史 ==========
             history_messages = []
             task_context = ""
 
-            if self.memory_file.exists():
-                try:
-                    with open(self.memory_file, 'r', encoding='utf-8') as f:
-                        history_data = json.load(f)
+            current_memory_file = self._get_memory_file(event)
+            if current_memory_file.exists():
+                with open(current_memory_file, 'r', encoding='utf-8') as f:
+                    history_data = json.load(f)
                     history_data = history_data.get("history", [])
 
                     # 取最近 10 条作为上下文
@@ -495,8 +590,8 @@ class Main(Star):
                             if any(kw in content for kw in task_keywords):
                                 task_context = content
                                 break
-                except Exception as e:
-                    logger.warning(f"读取本地记忆失败: {e}")
+            else:
+                logger.warning("未找到当前会话的记忆文件，使用空历史。")
             # ==========================================================
 
             # ========== 组装消息序列 ==========
@@ -517,7 +612,8 @@ class Main(Star):
                 "think": self.enable_think,
                 "options": {
                     "num_ctx": self.num_ctx,
-                    "temperature": min(self.temperature, 1.0)
+                    "temperature": min(self.temperature, 1.0),
+                    "num_predict": 4096
                 }
             }
 
@@ -531,7 +627,7 @@ class Main(Star):
                         "stream": False,
                         "response_format": None if self.enable_think else {"type": "json_object"},
                         "temperature": min(self.temperature, 1.0),
-                        "max_tokens": 1200
+                        "max_tokens": 4096
                     }
 
                     if not self.enable_think:
@@ -566,8 +662,20 @@ class Main(Star):
             try:
                 data = json.loads(content)
             except json.JSONDecodeError as e:
-                logger.error(f"JSON 解析失败: {e}，原始内容: {content[:200]}")
-                return None, None, None
+                logger.warning(f"JSON 解析失败，尝试修复: {e}")
+                # 尝试修复不完整的 JSON：若缺少闭合的 ]}，自动补全
+                if not content.endswith('}'):
+                    content += ']}'
+                else:
+                    if content.count('[') > content.count(']'):
+                        content += ']'
+                    if not content.endswith('}'):
+                        content += '}'
+                try:
+                    data = json.loads(content)
+                except json.JSONDecodeError as e2:
+                    logger.error(f"JSON 修复失败: {e2}，原始内容: {content[:200]}")
+                    return None, None, None
 
             if "sentences" in data:
                 sentences = data["sentences"]
@@ -601,7 +709,7 @@ class Main(Star):
         except Exception as e:
             logger.error(f"LLM 处理失败: {type(e).__name__}: {e}")
             return None, None, None
-
+        
     async def _synthesize_sentence(self, text: str, emotion: str):
         """
         单句合成。
@@ -816,6 +924,8 @@ class Main(Star):
         if not user_text:
             return
 
+        self._migrate_legacy_memory(event)
+
         # 获取中文、日语、情绪
         if self.use_llm_judge:
             zh_text, ja_list, emo_list = await self._get_llm_reply(event, user_text)
@@ -828,11 +938,14 @@ class Main(Star):
 
         # ========== 将用户输入和本插件回复保存到本地文件 ==========
         try:
+            # 获取当前会话的记忆文件路径
+            current_memory_file = self._get_memory_file(event)
+
             history_data = []
-            if self.memory_file.exists():
-                with open(self.memory_file, 'r', encoding='utf-8') as f:
-                    history_data = json.load(f)
-                history_data = history_data.get("history", [])
+            if current_memory_file.exists():
+                with open(current_memory_file, 'r', encoding='utf-8') as f:
+                    memory_data = json.load(f)
+                    history_data = memory_data.get("history", [])
             else:
                 history_data = []
 
@@ -843,7 +956,7 @@ class Main(Star):
             history_data = history_data[-60:]
 
             # 保存时附带当前角色名，方便识别
-            with open(self.memory_file, 'w', encoding='utf-8') as f:
+            with open(current_memory_file, 'w', encoding='utf-8') as f:
                 json.dump({"character_name": self.character_name, "history": history_data}, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.warning(f"保存本地记忆失败: {e}")

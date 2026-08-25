@@ -1,4 +1,10 @@
 {
+  "hide_gsv_options": {
+    "description": "隐藏高级 GSV 参数",
+    "hint": "开启后，将隐藏大部分 GPT-SoVITS 推理细节参数，简化配置界面。",
+    "type": "bool",
+    "default": false
+  },
   "llm_model_name": {
     "description": "【必填】大语言模型 (LLM) 名称",
     "hint": "请填写本地 Ollama 中已部署的模型名称（可通过命令行 ollama list 查看），例如 qwen3.5:4b、qwen3:8b 或 deepseek-r1:7b 等。",
@@ -12,17 +18,19 @@
     "default": "ollama",
     "options": ["ollama", "openai"]
   },
-  "llm_base_url": {
-    "description": "【可自定义】LLM服务地址",
-    "hint": "Ollama 默认为 http://127.0.0.1:11434。若使用 OpenAI 兼容后端（如 LM Studio 填 http://127.0.0.1:1234/v1，vLLM 填 http://127.0.0.1:8000/v1）。",
-    "type": "string",
-    "default": "http://127.0.0.1:11434"
-  },
   "llm_api_key": {
     "description": "【可自定义】本地模型API Key",
     "hint": "使用 Ollama 时留空。使用 OpenAI 兼容接口时通常填任意非空字符串（如 lm-studio）或 vLLM 填 EMPTY。",
     "type": "string",
-    "default": ""
+    "default": "",
+    "condition": { "llm_backend": "openai" }
+  },
+  "llm_base_url": {
+    "description": "【可自定义】LLM服务地址",
+    "hint": "Ollama 默认为 http://127.0.0.1:11434。若使用 OpenAI 兼容后端（如 LM Studio 填 http://127.0.0.1:1234/v1，vLLM 填 http://127.0.0.1:8000/v1）。",
+    "type": "string",
+    "default": "http://127.0.0.1:11434",
+    "options": ["http://127.0.0.1:11434", "http://127.0.0.1:1234/v1", "http://127.0.0.1:8000/v1"]
   },
   "num_ctx": {
     "description": "大模型上下文长度",
@@ -42,6 +50,13 @@
     "type": "bool",
     "default": true
   },
+  "default_voice": {
+    "description": "默认情绪",
+    "hint": "LLM 未开启或判别失败时使用，必须与文件夹名一致（例如 pingjing）。",
+    "type": "string",
+    "default": "pingjing",
+    "condition": { "llm_judge": false }
+  },
   "voice_transition": {
     "description": "语气渐变",
     "hint": "开启后，不同情绪句子之间将平滑过渡（加呼吸间隙和余弦渐变）。关闭则直接拼接，句子间会有明显的断点。",
@@ -50,166 +65,185 @@
   },
   "breathing_gap_ms": {
     "description": "呼吸间隙（毫秒）",
-    "hint": "开启语气渐变时生效。前一句说完后的停顿时间，默认 100。建议范围 50~300，数值太小会显得急促，太大容易断气。",
+    "hint": "前一句说完后的停顿时间，默认 100。建议范围 50~300，数值太小会显得急促，太大容易断气。",
     "type": "int",
-    "default": 100
+    "default": 100,
+    "condition": { "voice_transition": true }
   },
   "crossfade_ms": {
     "description": "交叉渐变长度（毫秒）",
-    "hint": "开启语气渐变时生效。两句话重叠过渡的时长，默认 300。建议范围 100~500，数值太小会显得生硬，太大可能会把两句话揉在一起。",
+    "hint": "两句话重叠过渡的时长，默认 300。建议范围 100~500，数值太小会显得生硬，太大可能会把两句话揉在一起。",
     "type": "int",
-    "default": 300
+    "default": 300,
+    "condition": { "voice_transition": true }
   },
   "client_base_url": {
     "description": "GPT-SoVITS 服务地址",
     "hint": "默认为 http://127.0.0.1:9880",
     "type": "string",
-    "default": "http://127.0.0.1:9880"
+    "default": "http://127.0.0.1:9880",
+    "condition": { "hide_gsv_options": false }
   },
-  "device": {
-    "description": "TTS 合成设备",
-    "hint": "选择 CUDA 使用显卡（GPU，速度更快），选择 CPU 使用处理器。如果切换后没有效果，请确保在启动 api_v2.py 时使用了匹配的参数（如 -d cuda）并重启服务。",
-    "type": "string",
-    "default": "cuda",
-    "options": ["cuda", "cpu"]
-  },
-    "auto_start_tts": {
+  "auto_start_tts": {
     "description": "一键启动本地 TTS 服务",
     "hint": "开启后，插件会自动检测后台服务是否在线。如果没有在线，将自动启动 GPT-SoVITS 的 api_v2.py。可在平台日志查看运行状态。",
     "type": "bool",
     "default": false
   },
   "tts_start_script": {
-    "description": "【开启上面的服务时必填】TTS 后端启动命令【绝对路径】",
+    "description": "【必填】TTS 后端启动命令【绝对路径】",
     "hint": "填入 api_v2.py 的绝对路径，例如 E:/GPT-SoVITS/api_v2.py。插件会自动调用 Python 运行它。",
     "type": "string",
-    "default": ""
+    "default": "",
+    "condition": { "auto_start_tts": true }
+  },
+  "device": {
+    "description": "TTS 合成设备",
+    "hint": "选择 CUDA 使用显卡（GPU，速度更快），选择 CPU 使用处理器。如果切换后没有效果，请确保在启动 api_v2.py 时使用了匹配的参数（如 -d cuda）并重启服务。",
+    "type": "string",
+    "default": "cuda",
+    "options": ["cuda", "cpu"],
+    "condition": { "auto_start_tts": true }
   },
   "model_dir": {
     "description": "【必填】模型文件夹所在路径",
     "hint": "存放 .ckpt 和 .pth 的文件夹路径",
     "type": "string",
-    "default": ""
+    "default": "",
+    "condition": { "hide_gsv_options": false }
   },
   "ref_audio_root": {
     "description": "【必填】参考音频根目录",
     "hint": "必须填写外部绝对路径，严禁放入 C盘中的 %AppData% 等系统隐藏目录，否则 TTS 会报 400 错误。",
     "type": "string",
-    "default": ""
-  },
-  "default_voice": {
-    "description": "默认情绪",
-    "hint": "LLM 未开启或判别失败时使用，必须与文件夹名一致（例如 pingjing）。",
-    "type": "string",
-    "default": "pingjing"
+    "default": "",
+    "condition": { "hide_gsv_options": false }
   },
   "timeout_seconds": {
-    "description": "超时时间",
+    "description": " TTS 超时时间",
     "hint": "单位秒。防止超时导致插件一直等待。",
     "type": "int",
-    "default": 120
+    "default": 120,
+    "condition": { "auto_start_tts": true }
   },
   "prompt_text": {
     "description": "默认参考音频文本",
     "hint": "仅当情绪文件夹内没有 asr.txt 时作为兜底使用。",
     "type": "string",
-    "default": "ふむ、おぬしが我輩のご主人か?"
+    "default": "ふむ、おぬしが我輩のご主人か?",
+    "condition": { "hide_gsv_options": false }
   },
   "prompt_lang": {
     "description": "参考音频文本语言",
     "hint": "请填写参考音频所念文本的语言代码（如 ja 或 zh）。",
     "type": "string",
-    "default": "ja"
+    "default": "ja",
+    "condition": { "hide_gsv_options": false }
   },
   "text_lang": {
     "description": "文本语言",
     "hint": "生成的台词语言代码（如 ja 或 zh）。",
     "type": "string",
-    "default": "ja"
+    "default": "ja",
+    "condition": { "hide_gsv_options": false }
   },
   "top_k": {
     "description": "核采样的阈值 (top_k)",
     "hint": "数值越大语气变化越丰富，常用于提高情感表现力。",
     "type": "int",
-    "default": 20
+    "default": 20,
+    "condition": { "hide_gsv_options": false }
   },
   "top_p": {
     "description": "核采样的阈值 (top_p)",
     "hint": "数值越高越随机。",
     "type": "float",
-    "default": 1
+    "default": 1,
+    "condition": { "hide_gsv_options": false }
   },
   "temperature": {
     "description": "随机性 (温度)",
     "hint": "控制语音合成的爆发力和大模型（LLM）的稳定性。语音默认1，如果给大模型传过高（>1）会导致翻译乱编、情绪不连贯。插件已自动将大模型温度限制在 1 以内。",
     "type": "float",
-    "default": 1
+    "default": 1,
+    "condition": { "hide_gsv_options": false }
   },
   "text_split_method": {
     "description": "切分文本的方法",
     "hint": "cut0（不切分）、cut1（四句一切）、cut2（50字一切）、cut3（按中文句号切）、cut4（按英文句号切）、cut5（按标点符号切）。",
     "type": "string",
-    "default": "cut1"
+    "default": "cut1",
+    "condition": { "hide_gsv_options": false }
   },
   "batch_size": {
     "description": "批处理大小",
     "hint": "并行处理时的批量大小。",
     "type": "int",
-    "default": 1
+    "default": 1,
+    "condition": { "hide_gsv_options": false }
   },
   "batch_threshold": {
     "description": "批处理阈值",
     "hint": "触发并行处理的最大文本长度阈值。",
     "type": "float",
-    "default": 1
+    "default": 1,
+    "condition": { "hide_gsv_options": false }
   },
   "split_bucket": {
     "description": "将文本分割成桶",
     "hint": "是否开启分桶处理，建议根据显存情况开启或关闭。",
     "type": "bool",
-    "default": true
+    "default": true,
+    "condition": { "hide_gsv_options": false }
   },
   "speed_factor": {
     "description": "语音播放速度",
     "hint": "1 为原始语速，可微调。",
     "type": "float",
-    "default": 1.0
+    "default": 1.0,
+    "condition": { "hide_gsv_options": false }
   },
   "fragment_interval": {
     "description": "语音片段之间的间隔时间",
     "hint": "不同语音片段间的间隔秒数。",
     "type": "float",
-    "default": 0.5
+    "default": 0.5,
+    "condition": { "hide_gsv_options": false }
   },
   "streaming_mode": {
     "description": "启用流模式",
     "hint": "建议关闭以保证完整单条音频输出。",
     "type": "bool",
-    "default": false
+    "default": false,
+    "condition": { "hide_gsv_options": false }
   },
   "seed": {
     "description": "随机种子",
     "hint": "设置固定种子可复现结果，-1 为完全随机。",
     "type": "int",
-    "default": -1
+    "default": -1,
+    "condition": { "hide_gsv_options": false }
   },
   "parallel_infer": {
     "description": "并行执行推理",
     "hint": "建议开启以加速合成。",
     "type": "bool",
-    "default": true
+    "default": true,
+    "condition": { "hide_gsv_options": false }
   },
   "repetition_penalty": {
     "description": "重复惩罚因子",
     "hint": "数值越大越不容易重复字词。",
     "type": "float",
-    "default": 1.35
+    "default": 1.35,
+    "condition": { "hide_gsv_options": false }
   },
   "media_type": {
     "description": "输出媒体的类型",
     "hint": "建议保持 wav 以获得最优音质。",
     "type": "string",
-    "default": "wav"
+    "default": "wav",
+    "condition": { "hide_gsv_options": false }
   },
   "character_name": {
     "description": "【可自定义】【必填】角色名称",
@@ -223,18 +257,6 @@
     "type": "string",
     "default": "murasame"
   },
-"delete_memory_file": {
-  "description": "【删除】删除指定记忆文件",
-  "hint": "输入你的角色标识符（上一个选项内显示的），保存并重载后，插件会删除对应的 DATA.json 文件。留空则不做任何操作。",
-  "type": "string",
-  "default": ""
-},
-  "list_memory_files": {
-    "description": "【忘记之前的角色标识符时开】扫描并列出所有记忆文件",
-    "hint": "开启保存并关闭后插件时会自动扫描插件目录，并将所有已有的角色记忆文件名打印到日志中，请前往平台日志查看",
-    "type": "bool",
-    "default": false
-  },
   "max_voice_cache": {
     "description": "【可自定义】最大语音缓存数量",
     "hint": "最多保留的临时/合并音频文件数。超过后会自动删除最旧的，建议 10-50，防止占用过多磁盘空间。",
@@ -242,17 +264,18 @@
     "default": 20
   },
   "enable_think": {
-    "description": "开启深度思考【仅Ollama有效】",
+    "description": "开启深度思考",
     "hint": "开启后，模型会在回答前先内部推理（用于增强上下文理解和逻辑）。注意：会让响应变慢。默认为关闭。",
     "type": "bool",
-    "default": false
+    "default": false,
+    "condition": { "llm_backend": "openai" }
   },
-"llm_timeout": {
-  "description": "【可自定义】大模型请求超时时间",
-  "hint": "单位秒。开启深度思考后会变慢，算力低的显卡或CPU建议设置在120秒以上，默认120秒。",
-  "type": "int",
-  "default": 120
-},
+  "llm_timeout": {
+    "description": "【可自定义】大模型请求超时时间",
+    "hint": "单位秒。开启深度思考后会变慢，算力低的显卡或CPU建议设置在120秒以上，默认120秒。",
+    "type": "int",
+    "default": 120
+  },
   "personality_prompt": {
     "description": "【可自定义】人格提示词",
     "hint": "你的角色设定和性格描述。插件启动时合并一次，之后发送给 LLM 时固定不变。",
@@ -273,7 +296,7 @@
   },
   "enable_default_emotions": {
     "description": "是否启用插件默认的丛雨语气",
-    "hint": "开启：在插件的6个默认丛雨语气（pingjing等）的基础上，额外添加你配置的新语气。关闭：完全只使用你在【情绪映射配置】中手动添加的语气，忽略默认文件夹里的6个。",
+    "hint": "开启：在插件的6个默认丛雨语气（pingjing等）的基础上，额外添加你配置的新语气。关闭：完全只使用你在【情绪映射配置】中手动添加的语气，忽略默认文件夹里的6个。（仅当添加了自定义情绪映射时，此设置才有意义）",
     "type": "bool",
     "default": true
   },
