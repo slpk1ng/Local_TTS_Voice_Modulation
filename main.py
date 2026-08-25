@@ -44,11 +44,17 @@ class Main(Star):
         self.llm_api_key = config.get("llm_api_key", "")
         self.num_ctx = config.get("num_ctx", 8192)
         self.history_length = config.get("history_length", 8)
+        self.display_lang = config.get("display_lang", "zh")
 
         # ========== TTS 配置 ==========
         self._tts_start_lock = threading.Lock()
         self.auto_start_tts = config.get("auto_start_tts", False)
         self.tts_start_script = config.get("tts_start_script", "")
+        if self.auto_start_tts and self.tts_start_script:
+            # 如果填写的不是以 .py 结尾，则视为文件夹，自动拼接 api_v2.py
+            if not self.tts_start_script.lower().endswith(".py"):
+                self.tts_start_script = str(Path(self.tts_start_script) / "api_v2.py").replace("\\", "/")
+                logger.info(f"检测到填写的是文件夹路径，已自动补全为: {self.tts_start_script}")
         self.model_dir = config.get("model_dir", "")
         self.timeout_seconds = config.get("timeout_seconds", 120)
         self.prompt_text_default = config.get("prompt_text", "ふむ、おぬしが我輩のご主人か?")
@@ -64,6 +70,7 @@ class Main(Star):
         self.speed_factor = config.get("speed_factor", 1.0)
         self.fragment_interval = config.get("fragment_interval", 1.0)
         self.voice_transition = config.get("voice_transition", True)
+        self.send_voice_separately = config.get("send_voice_separately", False)
         self.breathing_gap_ms = config.get("breathing_gap_ms", 100)
         self.crossfade_ms = config.get("crossfade_ms", 300)
         self.streaming_mode = config.get("streaming_mode", False)
@@ -143,17 +150,23 @@ class Main(Star):
         self._cleanup_voice_cache()
 
         # ========== 注册 WebUI API ==========
-        plugin_name = "Local_TTS_Voice_Modulation"  # 必须与 metadata.yaml 中的 name 一致
+        plugin_name = "Local_TTS_Voice_Modulation"
 
         try:
             self.context.register_web_api(
-                f"/{plugin_name}/memory_manager/api/list",
+                f"/{plugin_name}/api/list",
                 self._api_list_memories,
                 ["GET"],
                 "获取记忆文件列表"
             )
             self.context.register_web_api(
-                f"/{plugin_name}/memory_manager/api/delete",
+                f"/{plugin_name}/api/history",
+                self._api_get_chat_history,
+                ["POST"],
+                "获取聊天记录"
+            )
+            self.context.register_web_api(
+                f"/{plugin_name}/api/delete",
                 self._api_delete_memories,
                 ["POST"],
                 "删除选中的记忆文件"
@@ -230,6 +243,33 @@ class Main(Star):
         except Exception as e:
             logger.error(f"删除请求解析失败: {e}")
             return json_response({"success": False, "error": str(e)}, status_code=400)
+
+    async def _api_get_chat_history(self):
+        try:
+            payload = await request.json(default={})
+            filename = payload.get("filename", "")
+            if not re.match(r'^[A-Za-z0-9_\-]+\.json$', filename):
+                return json_response({"success": False, "error": "非法文件名"}, status_code=400)
+
+            file_path = (self.data_path / filename).resolve()
+            # 安全校验：必须在数据目录内
+            if self.data_path.resolve() not in file_path.parents:
+                return json_response({"success": False, "error": "路径不安全"}, status_code=403)
+
+            if not file_path.exists():
+                return json_response({"success": False, "error": "文件不存在"}, status_code=404)
+
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            return json_response({
+                "success": True,
+                "character_name": data.get("character_name", "未知"),
+                "history": data.get("history", [])
+            })
+        except Exception as e:
+            logger.error(f"读取聊天记录失败: {e}")
+            return json_response({"success": False, "error": str(e)}, status_code=500)
 
     def _migrate_legacy_memory(self, event: AstrMessageEvent):
         """将旧的统一记忆文件迁移到当前会话的记忆文件"""
@@ -654,7 +694,7 @@ class Main(Star):
                 content = json_match.group(0)
             else:
                 logger.error("未找到 JSON 对象，可能模型输出为空或格式错误。")
-                return None, None, None
+                return None, None, None, None, None
 
             content = content.strip()
             content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
@@ -674,7 +714,7 @@ class Main(Star):
                     data = json.loads(content)
                 except json.JSONDecodeError as e2:
                     logger.error(f"JSON 修复失败: {e2}，原始内容: {content[:200]}")
-                    return None, None, None
+                    return None, None, None, None, None
 
             if "sentences" in data:
                 sentences = data["sentences"]
@@ -687,13 +727,28 @@ class Main(Star):
 
             zh_list = []
             lang_list = []
+            display_list = []
             emo_list = []
             for s in sentences:
                 zh_text_cur = str(s.get("zh", "")).strip()
+                if not zh_text_cur:
+                    # 按优先级回退：英文 -> 日文 -> 韩文
+                    zh_text_cur = (
+                        str(s.get("en", "")).strip() or
+                        str(s.get("ja", "")).strip() or
+                        str(s.get("ko", "")).strip()
+                    )
                 lang_text_cur = str(s.get(self.text_lang, "")).strip()
-
+                
                 zh_list.append(zh_text_cur)
                 lang_list.append(lang_text_cur)
+                
+                if self.display_lang == "auto":
+                    display_cur = lang_text_cur if lang_text_cur else zh_text_cur
+                else:
+                    display_cur = str(s.get(self.display_lang, "")).strip() or zh_text_cur
+                display_list.append(display_cur)
+                
                 emo = s.get("emotion", self.default_voice)
                 if emo not in self.emotions:
                     emo = self.default_voice
@@ -702,12 +757,13 @@ class Main(Star):
             if not lang_list:
                 lang_list = [user_text]
                 emo_list = [self.default_voice]
+                display_list = [user_text]
 
             zh_text = "".join(zh_list)
-            return zh_text, lang_list, emo_list
+            return zh_text, lang_list, emo_list, display_list, lang_list
         except Exception as e:
             logger.error(f"LLM 处理失败: {type(e).__name__}: {e}")
-            return None, None, None
+            return None, None, None, None, None
         
     async def _synthesize_sentence(self, text: str, emotion: str):
         """
@@ -925,11 +981,15 @@ class Main(Star):
 
         self._migrate_legacy_memory(event)
 
-        # 获取中文、日语、情绪
+        # 获取中文、日语、情绪、分句中文
         if self.use_llm_judge:
-            zh_text, ja_list, emo_list = await self._get_llm_reply(event, user_text)
+            zh_text, ja_list, emo_list, display_list, lang_list = await self._get_llm_reply(event, user_text)
         else:
-            zh_text, ja_list, emo_list = user_text, [user_text], [self.default_voice]
+            zh_text = user_text
+            ja_list = [user_text]
+            emo_list = [self.default_voice]
+            display_list = [user_text]
+            lang_list = [user_text]
 
         if not zh_text:
             yield event.plain_result("模型生成失败，请检查 AstrBot 配置。")
@@ -968,9 +1028,11 @@ class Main(Star):
         temp_wavs = []
         failed_sentences = []
 
-        # 逐句合成并收集
-        for i in range(len(ja_list)):
-            temp_wav = await self._synthesize_sentence(ja_list[i], emo_list[i])
+        # 并行合成所有句子（消除逐句等待造成的空白）
+        tasks = [self._synthesize_sentence(ja_list[i], emo_list[i]) for i in range(len(ja_list))]
+        results = await asyncio.gather(*tasks)
+        
+        for i, temp_wav in enumerate(results):
             if temp_wav:
                 temp_wavs.append(temp_wav)
             else:
@@ -979,11 +1041,14 @@ class Main(Star):
         if failed_sentences:
             logger.warning(f"以下句子合成失败（已在语音中跳过，但文本仍会发送）: {failed_sentences}")
 
-        combined_audio = self._merge_wavs(temp_wavs)
-
-        if combined_audio:
-            chain = [Plain(zh_text), Record(file=combined_audio)]
-            yield event.chain_result(chain)
+        # 根据是否开启分开发送，决定发送方式
+        if self.send_voice_separately:
+            # 分开发送：每句话独立发送（带文字）
+            for idx, temp_wav in enumerate(temp_wavs):
+                if temp_wav and temp_wav.exists():
+                    sentence_text = display_list[idx] if idx < len(display_list) else zh_text
+                    yield event.chain_result([Plain(sentence_text), Record(file=str(temp_wav))])
+                    await asyncio.sleep(0.2)
             # 清理临时文件
             for temp_wav in temp_wavs:
                 try:
@@ -991,8 +1056,20 @@ class Main(Star):
                 except:
                     pass
         else:
-            logger.error("所有 TTS 句子均合成失败，已降级为纯文本回复。")
-            yield event.plain_result(zh_text)
+            # 合并发送（原有逻辑）
+            combined_audio = self._merge_wavs(temp_wavs)
+            if combined_audio:
+                combined_text = "".join(display_list) if display_list else zh_text
+                chain = [Plain(combined_text), Record(file=combined_audio)]
+                yield event.chain_result(chain)
+                for temp_wav in temp_wavs:
+                    try:
+                        temp_wav.unlink(missing_ok=True)
+                    except:
+                        pass
+            else:
+                logger.error("所有 TTS 句子均合成失败，已降级为纯文本回复。")
+                yield event.plain_result(zh_text)
 
         # 最后停止事件，避免主程序重复回复
         self._cleanup_voice_cache()

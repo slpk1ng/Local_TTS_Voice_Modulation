@@ -1,10 +1,4 @@
 {
-  "hide_gsv_options": {
-    "description": "隐藏高级 GSV 参数",
-    "hint": "开启后，将隐藏大部分 GPT-SoVITS 推理细节参数，简化配置界面。",
-    "type": "bool",
-    "default": false
-  },
   "llm_model_name": {
     "description": "【必填】大语言模型 (LLM) 名称",
     "hint": "请填写本地 Ollama 中已部署的模型名称（可通过命令行 ollama list 查看），例如 qwen3.5:4b、qwen3:8b 或 deepseek-r1:7b 等。",
@@ -12,25 +6,25 @@
     "default": ""
   },
   "llm_backend": {
-    "description": "【可自定义】LLM后端类型",
+    "description": "LLM后端类型",
     "hint": "选择 Ollama 使用专属API，选择 OpenAI 兼容接口以适配 LM Studio、vLLM、LocalAI 等其他本地大模型部署软件。",
     "type": "string",
     "default": "ollama",
     "options": ["ollama", "openai"]
   },
   "llm_api_key": {
-    "description": "【可自定义】本地模型API Key",
+    "description": "本地模型API Key",
     "hint": "使用 Ollama 时留空。使用 OpenAI 兼容接口时通常填任意非空字符串（如 lm-studio）或 vLLM 填 EMPTY。",
     "type": "string",
     "default": "",
     "condition": { "llm_backend": "openai" }
   },
   "llm_base_url": {
-    "description": "【可自定义】LLM服务地址",
+    "description": "LLM服务地址",
     "hint": "Ollama 默认为 http://127.0.0.1:11434。若使用 OpenAI 兼容后端（如 LM Studio 填 http://127.0.0.1:1234/v1，vLLM 填 http://127.0.0.1:8000/v1）。",
     "type": "string",
     "default": "http://127.0.0.1:11434",
-    "options": ["http://127.0.0.1:11434", "http://127.0.0.1:1234/v1", "http://127.0.0.1:8000/v1"]
+    "options": ["http://127.0.0.1:11434", "http://127.0.0.1:1234/v1", "http://127.0.0.1:8000/v1", ""]
   },
   "num_ctx": {
     "description": "大模型上下文长度",
@@ -44,66 +38,12 @@
     "type": "int",
     "default": 8
   },
-  "llm_judge": {
-    "description": "是否使用 LLM 自动判别情绪",
-    "hint": "开启后，大模型会根据语境自动从文件夹中挑一个情绪；关闭则固定使用默认情绪。",
-    "type": "bool",
-    "default": true
-  },
-  "default_voice": {
-    "description": "默认情绪",
-    "hint": "LLM 未开启或判别失败时使用，必须与文件夹名一致（例如 pingjing）。",
-    "type": "string",
-    "default": "pingjing",
-    "condition": { "llm_judge": false }
-  },
-  "voice_transition": {
-    "description": "语气渐变",
-    "hint": "开启后，不同情绪句子之间将平滑过渡（加呼吸间隙和余弦渐变）。关闭则直接拼接，句子间会有明显的断点。",
-    "type": "bool",
-    "default": true
-  },
-  "breathing_gap_ms": {
-    "description": "呼吸间隙（毫秒）",
-    "hint": "前一句说完后的停顿时间，默认 100。建议范围 50~300，数值太小会显得急促，太大容易断气。",
-    "type": "int",
-    "default": 100,
-    "condition": { "voice_transition": true }
-  },
-  "crossfade_ms": {
-    "description": "交叉渐变长度（毫秒）",
-    "hint": "两句话重叠过渡的时长，默认 300。建议范围 100~500，数值太小会显得生硬，太大可能会把两句话揉在一起。",
-    "type": "int",
-    "default": 300,
-    "condition": { "voice_transition": true }
-  },
   "client_base_url": {
     "description": "GPT-SoVITS 服务地址",
     "hint": "默认为 http://127.0.0.1:9880",
     "type": "string",
     "default": "http://127.0.0.1:9880",
     "condition": { "hide_gsv_options": false }
-  },
-  "auto_start_tts": {
-    "description": "一键启动本地 TTS 服务",
-    "hint": "开启后，插件会自动检测后台服务是否在线。如果没有在线，将自动启动 GPT-SoVITS 的 api_v2.py。可在平台日志查看运行状态。",
-    "type": "bool",
-    "default": false
-  },
-  "tts_start_script": {
-    "description": "【必填】TTS 后端启动命令【绝对路径】",
-    "hint": "填入 api_v2.py 的绝对路径，例如 E:/GPT-SoVITS/api_v2.py。插件会自动调用 Python 运行它。",
-    "type": "string",
-    "default": "",
-    "condition": { "auto_start_tts": true }
-  },
-  "device": {
-    "description": "TTS 合成设备",
-    "hint": "选择 CUDA 使用显卡（GPU，速度更快），选择 CPU 使用处理器。如果切换后没有效果，请确保在启动 api_v2.py 时使用了匹配的参数（如 -d cuda）并重启服务。",
-    "type": "string",
-    "default": "cuda",
-    "options": ["cuda", "cpu"],
-    "condition": { "auto_start_tts": true }
   },
   "model_dir": {
     "description": "【必填】模型文件夹所在路径",
@@ -114,7 +54,7 @@
   },
   "ref_audio_root": {
     "description": "【必填】参考音频根目录",
-    "hint": "必须填写外部绝对路径，严禁放入 C盘中的 %AppData% 等系统隐藏目录，否则 TTS 会报 400 错误。",
+    "hint": "填有所有语气的文件夹路径即可。严禁填写 C盘中的 %AppData% 等系统隐藏目录，否则 TTS 会报 400 错误。",
     "type": "string",
     "default": "",
     "condition": { "hide_gsv_options": false }
@@ -246,35 +186,22 @@
     "condition": { "hide_gsv_options": false }
   },
   "character_name": {
-    "description": "【可自定义】【必填】角色名称",
+    "description": "【必填】角色名称",
     "hint": "用于显示在对话历史摘要中的名字，必须与你的人格设定中的名字一致。",
     "type": "string",
     "default": "丛雨"
   },
   "character_key": {
-    "description": "【可自定义】【必填】角色标识符（用于本地文件命名）",
+    "description": "【必填】角色标识符（用于本地文件命名）",
     "hint": "必须为纯英文或拼音，不要加空格或符号。用于保存记忆文件，避免使用非英文导致报错。",
     "type": "string",
     "default": "murasame"
   },
   "max_voice_cache": {
-    "description": "【可自定义】最大语音缓存数量",
+    "description": "最大语音缓存数量",
     "hint": "最多保留的临时/合并音频文件数。超过后会自动删除最旧的，建议 10-50，防止占用过多磁盘空间。",
     "type": "int",
     "default": 20
-  },
-  "enable_think": {
-    "description": "开启深度思考",
-    "hint": "开启后，模型会在回答前先内部推理（用于增强上下文理解和逻辑）。注意：会让响应变慢。默认为关闭。",
-    "type": "bool",
-    "default": false,
-    "condition": { "llm_backend": "openai" }
-  },
-  "llm_timeout": {
-    "description": "【可自定义】大模型请求超时时间",
-    "hint": "单位秒。开启深度思考后会变慢，算力低的显卡或CPU建议设置在120秒以上，默认120秒。",
-    "type": "int",
-    "default": 120
   },
   "personality_prompt": {
     "description": "【可自定义】人格提示词",
@@ -284,15 +211,102 @@
   },
   "json_prompt": {
     "description": "【可自定义】【必填】JSON提示词",
-    "hint": "强制模型输出指定 JSON 结构的格式要求。只建议修改每个\" \"内的内容，其中，不要修改sentences和emotion。插件启动时合并一次，之后发送给 LLM 时固定不变。",
+    "hint": "可保持默认，得到的语言和文字分别为日语和中文。强制模型输出指定 JSON 结构的格式要求。只建议修改每个\" \"内的内容，其中，不要修改sentences和emotion。插件启动时合并一次，之后发送给 LLM 时固定不变。",
     "type": "text",
-    "default": "【直接输出】忽略所有自我反思、角色复核等冗长思考，直接根据用户最新消息输出JSON。【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为：{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}, {\"zh\": \"第二句中文\", \"ja\": \"第二句日语\", \"emotion\": \"另一种情绪\"}]}等更多情绪均可，禁止输出任何解释或代码块。"
+    "default": "【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为：{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}, {\"zh\": \"第二句中文\", \"ja\": \"第二句日语\", \"emotion\": \"另一种情绪\"}]}等更多情绪均可，禁止输出任何解释或非JSON格式的文本"
   },
   "supplement_prompt": {
     "description": "【可自定义】补充提示词",
     "hint": "回答风格、情绪判断规则、翻译一致性要求、情绪连贯性规则等。插件启动时合并一次，之后发送给 LLM 时固定不变。",
     "type": "text",
     "default": "回答自然、简短，通常两到五句话；不要重复最近说过的话，不要加入动作、旁白或括号舞台说明。【情绪判断规则】请仔细阅读最近对话历史，结合你（角色）的性格特点来判断情绪！如果主人对你亲昵（如摸头、夸奖），即使你嘴上说“我才没有”，情绪也应该是害羞或高兴；如果主人故意逗你、骂你或惹你生气，情绪应该是生气或着急；如果只是平淡陈述，使用平静。【翻译一致性要求】必须表达完全相同的含义和语气，绝对不能出现含义相反或意思不匹配的翻译！【情绪连贯性强制规则】如果用户明确地侮辱、挑衅或激怒你（例如叫你“幼刀、搓衣板、飞机场”），你的情绪必须保持连贯。即：整句话所有分句的情绪必须都是“生气”或“着急”，绝对不能把后半句的“命令/威胁”改成“害羞”或“高兴”！除非你明确使用了“但是”、“不过”等转折词，否则不要轻易切换成其他情绪。【情绪匹配规则】情绪文件夹可能是拼音（如 gaoxing），也可能是英文（如 happy）。你必须严格只输出我在【情绪可选列表】中提供的单词，绝对不能输出中文汉字或拼音简写！"
+  },
+  "hide_gsv_options": {
+    "description": "隐藏高级 GSV 参数",
+    "hint": "开启后，将隐藏大部分 GPT-SoVITS 推理细节参数，简化配置界面。",
+    "type": "bool",
+    "default": false
+  },
+  "send_voice_separately": {
+  "description": "语音分开发送",
+  "hint": "开启后，每句话将单独作为一条语音消息发送，不再合并成一个音频。适合你希望听到逐句停顿，或不想等待全部合成完毕的场景。默认关闭（合并发送）。",
+  "type": "bool",
+  "default": false
+  },
+  "enable_think": {
+    "description": "开启深度思考",
+    "hint": "开启后，模型会在回答前先内部推理（用于增强上下文理解和逻辑）。注意：会让响应变慢。默认为关闭。",
+    "type": "bool",
+    "default": false,
+    "condition": { "llm_backend": "ollama" }
+  },
+  "llm_timeout": {
+    "description": "大模型请求超时时间",
+    "hint": "单位秒。开启深度思考后会变慢，算力低的显卡或CPU建议设置在120秒以上，默认120秒。",
+    "type": "int",
+    "default": 120
+  },
+  "auto_start_tts": {
+    "description": "一键启动本地 TTS 服务",
+    "hint": "开启后，插件会自动检测后台服务是否在线。如果没有在线，将自动启动 GPT-SoVITS 的 api_v2.py。可在平台日志查看运行状态。",
+    "type": "bool",
+    "default": false
+  },
+  "tts_start_script": {
+    "description": "【必填】TTS 后端启动命令",
+    "hint": "填写 api_v2.py 当前所在的文件夹路径即可，例如 E:/GPT-SoVITS，插件会自动补全为 E:/GPT-SoVITS/api_v2.py。两种斜杠均可识别，但是不可混合使用，所有填路径的都是",
+    "type": "string",
+    "default": "",
+    "condition": { "auto_start_tts": true }
+  },
+  "device": {
+    "description": "TTS 合成设备",
+    "hint": "选择 CUDA 使用显卡（GPU，速度更快），选择 CPU 使用处理器。如果切换后没有效果，请确保在启动 api_v2.py 时使用了匹配的参数（如 -d cuda）并重启服务。",
+    "type": "string",
+    "default": "cuda",
+    "options": ["cuda", "cpu"],
+    "condition": { "auto_start_tts": true }
+  },
+  "llm_judge": {
+    "description": "是否使用 LLM 自动判别情绪",
+    "hint": "开启后，大模型会根据语境自动从文件夹中挑一个情绪；关闭则固定使用默认情绪。",
+    "type": "bool",
+    "default": true
+  },
+  "display_lang": {
+  "description": "显示文本语言",
+  "hint": "选择发送消息时文字的语言，可选：中文（zh）、日语（ja）、英语（en）、韩语（ko）或跟随语音（auto）。",
+  "type": "string",
+  "default": "zh",
+  "options": ["zh", "ja", "en", "ko", "auto"],
+  "condition": { "llm_judge": true }
+},
+  "default_voice": {
+    "description": "默认情绪",
+    "hint": "LLM 未开启或判别失败时使用，必须与文件夹名一致（例如 pingjing）。",
+    "type": "string",
+    "default": "pingjing",
+    "condition": { "llm_judge": false }
+  },
+  "voice_transition": {
+    "description": "语气渐变",
+    "hint": "开启后，不同情绪句子之间将平滑过渡（加呼吸间隙和余弦渐变）。关闭则直接拼接，句子间会有明显的断点。",
+    "type": "bool",
+    "default": true
+  },
+  "breathing_gap_ms": {
+    "description": "呼吸间隙（毫秒）",
+    "hint": "前一句说完后的停顿时间，默认 100。建议范围 50~300，数值太小会显得急促，太大容易断气。",
+    "type": "int",
+    "default": 100,
+    "condition": { "voice_transition": true }
+  },
+  "crossfade_ms": {
+    "description": "交叉渐变长度（毫秒）",
+    "hint": "两句话重叠过渡的时长，默认 300。建议范围 100~500，数值太小会显得生硬，太大可能会把两句话揉在一起。",
+    "type": "int",
+    "default": 300,
+    "condition": { "voice_transition": true }
   },
   "enable_default_emotions": {
     "description": "是否启用插件默认的丛雨语气",

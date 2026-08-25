@@ -1,4 +1,14 @@
-# 本地TTS语气变化 v1.1.6
+# 本地TTS语气变化 v1.1.7
+
+- v1.1.7：简化了填写api_v2.py的场景，现在只需选择该文件所在的路径即可。修复了一些文本错误，增加了更详细的文本提示。
+
+增加 `语音分开发送` 功能，开启后语音不再自动合并为长语音，默认关闭。
+
+修改了插件 UI 的顺序。新增支持中、日、英、韩的文本输出。
+
+WebUI 中新增 `查看聊天记录` 、`选择`  、 `全选` 、 `取消全选` 和 `反选` 功能，将原 `按角色名（A~Z）` 的分类更改为 `按角色` ，自动按照A~Z分类，且每个不同的角色之间增加了明显的间隙。
+
+更新了教程文档。
 
 - 基于 AstrBot 的全自动情绪 TTS 插件。支持通过本地大模型自动判断语境情绪，联动本地 GPT-SoVITS 生成带情绪起伏的自选语种语音，并实现**自选语种文本 + 自选语种语音双回复**，直接发送至 QQ。
 
@@ -13,6 +23,8 @@
 - 丛雨AIpet仓库链接：[https://github.com/kuxiaowo/AIpet-Murasame](https://github.com/kuxiaowo/AIpet-Murasame)。
 
 - GPT-SoVITS ： [https://github.com/RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 。
+
+- 查看此插件详细教程：[https://github.com/slpk1ng/Local_TTS_Voice_Modulation/blob/main/guide.md)。
 
 ## 获取最新版本请优先关注 [https://github.com/slpk1ng/Local_TTS_Voice_Modulation](https://github.com/slpk1ng/Local_TTS_Voice_Modulation) 
 
@@ -181,6 +193,7 @@ D:/tts/yuqi/
 └── ...
 ```
 
+
 ## 📝 更新日志
 
 - v1.0.0：首个正式版本。
@@ -233,6 +246,17 @@ D:/tts/yuqi/
 
 
 - v1.1.6：修复了WebUI只能搜索到某一个角色的bug。
+
+
+- v1.1.7：简化了填写api_v2.py的场景，现在只需选择该文件所在的路径即可。修复了一些文本错误，增加了更详细的文本提示。
+
+增加 `语音分开发送` 功能，开启后语音不再自动合并为长语音，默认关闭。
+
+修改了插件 UI 的顺序。新增支持中、日、英、韩的文本输出。
+
+WebUI 中新增 `查看聊天记录` 、 `全选` 、 `取消全选` 和 `反选` 功能，将原 `按角色名（A~Z）` 的分类更改为 `按角色` ，自动按照A~Z分类，且每个不同的角色之间增加了明显的间隙。
+
+更新了教程文档。
 
 
 
