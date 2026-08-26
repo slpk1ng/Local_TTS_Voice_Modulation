@@ -1,8 +1,8 @@
 name: Local_TTS_Voice_Modulation
 display_name: 本地TTS语气变化
 short_desc: 当你发现有bug时，可前往本插件的仓库检查最新版哦。
-desc: 当你发现有bug时，可前往本插件的仓库检查最新版哦。基于 AstrBot 的智能情绪 TTS 插件。它调用模型自动判断语境情绪，自动匹配“高兴、害羞”等对应的参考音频，合成极具感情色彩的语音。支持自动扫描外部目录，参数高度可调，轻松适配大众用户。
-version: v1.1.7
+desc: 当你发现有bug时，可前往本插件的仓库检查最新版哦。基于 AstrBot 的一个小白也会使用的智能情绪 TTS 插件。它调用模型自动判断语境情绪，自动匹配“高兴、害羞”等对应的参考音频，合成极具感情色彩的语音。支持自动扫描外部目录，参数高度可调，轻松适配大众用户。
+version: v1.1.8
 author: slpk1ng
 support_platforms:
   - qq_official
@@ -10,9 +10,9 @@ logo: "./logo.png"
 category: TTS语气变化
 repo: https://github.com/slpk1ng/Local_TTS_Voice_Modulation
 tags:
-  TTS
-  TTS语气变化
-  文字转语音
-  工具
-  语音
-  本地
+  - TTS 
+  - TTS语气变化 
+  - 文字转语音 
+  - 工具 
+  - 语音 
+  - 本地

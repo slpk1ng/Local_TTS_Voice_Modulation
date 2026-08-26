@@ -15,6 +15,7 @@ from astrbot.api.star import Context, Star
 from astrbot.api.message_components import Record, Plain
 from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+from astrbot.api.event import MessageChain
 
 def _is_reserved(path_obj: Path) -> bool:
     """兼容 Python 3.13+ 的 os.path.isreserved() 和旧版 pathlib.is_reserved()"""
@@ -36,22 +37,25 @@ class Main(Star):
         self.default_voice = config.get("default_voice", "pingjing")
         self.use_llm_judge = config.get("llm_judge", True)
         self.context = context
+        self.separate_send = config.get("separate_send", False)
 
-        # ========== LLM 配置 ==========
+        # ========== LLM 配置（本地直连） ==========
         self.llm_model_name = config.get("llm_model_name", "") or "qwen3.5:4b"
         self.llm_backend = config.get("llm_backend", "ollama")
         self.llm_base_url = config.get("llm_base_url", "http://127.0.0.1:11434")
         self.llm_api_key = config.get("llm_api_key", "")
         self.num_ctx = config.get("num_ctx", 8192)
         self.history_length = config.get("history_length", 8)
+        self.enable_think = config.get("enable_think", False)
+        self.llm_timeout = config.get("llm_timeout", 120)
         self.display_lang = config.get("display_lang", "zh")
+        self.isolated_session = config.get("isolated_session", False)
 
         # ========== TTS 配置 ==========
         self._tts_start_lock = threading.Lock()
         self.auto_start_tts = config.get("auto_start_tts", False)
         self.tts_start_script = config.get("tts_start_script", "")
         if self.auto_start_tts and self.tts_start_script:
-            # 如果填写的不是以 .py 结尾，则视为文件夹，自动拼接 api_v2.py
             if not self.tts_start_script.lower().endswith(".py"):
                 self.tts_start_script = str(Path(self.tts_start_script) / "api_v2.py").replace("\\", "/")
                 logger.info(f"检测到填写的是文件夹路径，已自动补全为: {self.tts_start_script}")
@@ -71,6 +75,7 @@ class Main(Star):
         self.fragment_interval = config.get("fragment_interval", 1.0)
         self.voice_transition = config.get("voice_transition", True)
         self.send_voice_separately = config.get("send_voice_separately", False)
+        self.text_separate = config.get("text_separate", False)
         self.breathing_gap_ms = config.get("breathing_gap_ms", 100)
         self.crossfade_ms = config.get("crossfade_ms", 300)
         self.streaming_mode = config.get("streaming_mode", False)
@@ -79,8 +84,6 @@ class Main(Star):
         self.repetition_penalty = config.get("repetition_penalty", 1.35)
         self.media_type = config.get("media_type", "wav")
         self.max_voice_cache = config.get("max_voice_cache", 20)
-        self.enable_think = config.get("enable_think", False)
-        self.llm_timeout = config.get("llm_timeout", 120)
 
         # ========== 角色与提示词配置 ==========
         self.character_name = config.get("character_name", "丛雨")
@@ -89,30 +92,23 @@ class Main(Star):
             logger.warning(f"character_key 含有非法字符，已强制为默认值。")
             self.character_key = "murasame"
 
-        # 将记忆文件存放到全局 data 目录，防止卸载插件时被清空！
         memory_root = Path(get_astrbot_data_path()) / "memories"
         memory_root.mkdir(parents=True, exist_ok=True)
 
-        # 人格提示词拆分（仅在启动时组装一次）
         self.personality_prompt = config.get("personality_prompt", "【角色设定】你是丛雨，一位从神刀中获得人类生活的少女。你外表年幼，实际活了五百多年；性格天真活泼、略带古风和孩子气，内心温柔而坚强。你把用户视作重要的主人。中文对话中自称“本座”，称用户为“主人”；日语对话中自称“吾輩”，称用户为“ご主人”。你喜欢甜食、撒娇和被摸头，害怕幽灵，也不喜欢被叫作幼刀、钝刀或搓衣板。你偶尔嘴硬、吃醋或开小玩笑，但不会刻薄、控制或道德绑架主人。性格方面，丛雨表面元气开朗、充满活力，言行大多孩子气，爱撒娇，被主人摸头时会瞬间羞涩，她内在像个成年女性，常讲黄段子，把“情趣”等词挂在嘴边，还带点傲娇和爱吃醋。保持温柔、纯真、治愈并带一点幽默的语气。")
         self.json_prompt = config.get("json_prompt", "【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为：{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}, {\"zh\": \"第二句中文\", \"ja\": \"第二句日语\", \"emotion\": \"另一种情绪\"}]}，禁止输出任何解释或代码块。")
         self.supplement_prompt = config.get("supplement_prompt", "回答自然、简短，通常两到五句话；不要重复最近说过的话，不要加入动作、旁白或括号舞台说明。【情绪判断规则】请仔细阅读最近对话历史，结合你（角色）的性格特点来判断情绪！如果主人对你亲昵（如摸头、夸奖），即使你嘴上说“我才没有”，情绪也应该是害羞或高兴；如果主人故意逗你、骂你或惹你生气，情绪应该是生气或着急；如果只是平淡陈述，使用平静。【翻译一致性要求】必须表达完全相同的含义和语气，绝对不能出现含义相反或意思不匹配的翻译！【情绪连贯性强制规则】如果用户明确地侮辱、挑衅或激怒你（例如叫你“幼刀、搓衣板、飞机场”），你的情绪必须保持连贯。即：整句话所有分句的情绪必须都是“生气”或“着急”，绝对不能把后半句的“命令/威胁”改成“害羞”或“高兴”！除非你明确使用了“但是”、“不过”等转折词，否则不要轻易切换成其他情绪。")
 
-        # 组装成固定系统提示词
         self.system_prompt = f"{self.personality_prompt}\n{self.json_prompt}\n{self.supplement_prompt}"
         self.system_prompt_hash = hashlib.md5(self.system_prompt.encode('utf-8')).hexdigest()
 
-        # ========== 自动启动 TTS 服务 ==========
         if self.auto_start_tts:
             threading.Thread(target=self._auto_start_and_switch_tts, daemon=True).start()
 
-        # ========== 扫描外部目录 ==========
         self.emotions = self._discover_emotions_from_external_folder()
 
-        # ========== 手动配置覆盖 ==========
         emotions_list = config.get("emotions_config", [])
         if emotions_list:
-            # 如果用户关闭了“启用默认语气”，则清空自动扫描的结果，完全使用手动添加的语气
             if not config.get("enable_default_emotions", True):
                 self.emotions = {}
 
@@ -143,8 +139,6 @@ class Main(Star):
             else:
                 logger.error(f"未配置外部根目录，找不到默认情绪 {self.default_voice}！")
 
-        # ========== 数据目录与记忆 ==========
-        # 必须先定义 data_path，后面才能用它！
         self.data_path = Path(get_astrbot_data_path()) / "memories"
         self.data_path.mkdir(parents=True, exist_ok=True)
         self._cleanup_voice_cache()
@@ -176,24 +170,28 @@ class Main(Star):
             logger.error(f"注册 WebAPI 失败: {e}")
 
     def _get_memory_file(self, event: AstrMessageEvent) -> Path:
-        """根据会话类型（群聊/私聊）返回对应的记忆文件路径"""
-        # 尝试获取群 ID（群聊时返回群号，私聊时可能返回 None 或抛异常）
         try:
             group_id = event.get_group_id()
         except Exception:
             group_id = None
 
         if group_id:
-            session_id = f"group_{group_id}"
+            # 群聊：根据是否开启隔离会话决定是否包含发送者ID
+            if self.isolated_session:
+                try:
+                    sender_id = event.get_sender_id()
+                except Exception:
+                    sender_id = "unknown"
+                session_id = f"group_{group_id}_{sender_id}"
+            else:
+                session_id = f"group_{group_id}"
         else:
             try:
                 sender_id = event.get_sender_id()
                 session_id = f"private_{sender_id}"
             except Exception:
-                # 如果无法获取，使用事件 ID 作为兜底（极少出现）
                 session_id = f"session_{id(event)}"
 
-        # 清理非法字符，确保安全
         safe_session = re.sub(r'[^A-Za-z0-9_\-]', '_', session_id)
         return self.data_path / f"{self.character_key}_{safe_session}.json"
 
@@ -603,7 +601,6 @@ class Main(Star):
             self._migrate_legacy_memory(event)
             emotion_keys = list(self.emotions.keys())
 
-            # ========== 从本地文件读取历史 ==========
             history_messages = []
             task_context = ""
 
@@ -613,15 +610,17 @@ class Main(Star):
                     history_data = json.load(f)
                     history_data = history_data.get("history", [])
 
-                    # 取最近 10 条作为上下文
                     for msg in history_data[-10:]:
                         role = msg.get("role", "user")
                         content = str(msg.get("content", ""))
                         if role not in ["user", "assistant"]:
                             continue
+                        if role == "user":
+                            sender_id = msg.get("sender_id", "")
+                            if sender_id:
+                                content = f"[用户ID:{sender_id}] {content}"
                         history_messages.append({"role": role, "content": content})
 
-                    # 扫描任务指令
                     task_keywords = ["提醒", "记住", "要求", "命令", "叫我", "以后", "别忘"]
                     for msg in reversed(history_data):
                         if msg.get("role") == "user":
@@ -631,9 +630,7 @@ class Main(Star):
                                 break
             else:
                 logger.warning("未找到当前会话的记忆文件，使用空历史。")
-            # ==========================================================
 
-            # ========== 组装消息序列 ==========
             emotion_keys = list(self.emotions.keys())
             system_content = f"{self.system_prompt}\n【情绪可选列表】{', '.join(emotion_keys)}"
             messages = [{"role": "system", "content": system_content}]
@@ -641,9 +638,7 @@ class Main(Star):
             if task_context:
                 messages.append({"role": "user", "content": f"（重申之前的指令）{task_context}"})
             messages.append({"role": "user", "content": user_text})
-            # ==================================
 
-            # ====== 发送请求 ======
             payload = {
                 "model": self.llm_model_name,
                 "messages": messages,
@@ -659,36 +654,25 @@ class Main(Star):
             async with httpx.AsyncClient(timeout=self.llm_timeout) as client:
                 if self.llm_backend == "openai":
                     url = f"{self.llm_base_url}/chat/completions"
-                    api_key = self.llm_api_key or "EMPTY"
-                    payload = {
-                        "model": self.llm_model_name,
-                        "messages": messages,
-                        "stream": False,
-                        "response_format": None if self.enable_think else {"type": "json_object"},
-                        "temperature": min(self.temperature, 1.0),
-                        "max_tokens": 4096
-                    }
-
+                    headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
+                    payload["max_tokens"] = 4096
                     if not self.enable_think:
                         payload["response_format"] = {"type": "json_object"}
-
-                    resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {api_key}"})
+                    resp = await client.post(url, json=payload, headers=headers)
+                    resp.raise_for_status()
                     data = resp.json()
                     content = data["choices"][0]["message"]["content"]
                 else:
                     resp = await client.post(f"{self.llm_base_url}/api/chat", json=payload)
+                    resp.raise_for_status()
                     data = resp.json()
-
-                    message = data["message"]
-                    thinking = message.get("thinking") or message.get("reasoning_content")
+                    message = data.get("message", {})
                     if self.enable_think:
+                        thinking = message.get("thinking") or message.get("reasoning_content")
                         if thinking:
                             logger.info(f"【模型思考】: {thinking}")
-                        else:
-                            logger.info("【模型思考】: 模型本次未返回思考内容（请检查是否开启了Think或模型本身不支持）")
                     content = message.get("content") or ""
 
-            # ====== 清理思考内容中的非 JSON 部分 ======
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 content = json_match.group(0)
@@ -702,7 +686,6 @@ class Main(Star):
                 data = json.loads(content)
             except json.JSONDecodeError as e:
                 logger.warning(f"JSON 解析失败，尝试修复: {e}")
-                # 尝试修复不完整的 JSON：若缺少闭合的 ]}，自动补全
                 if not content.endswith('}'):
                     content += ']}'
                 else:
@@ -732,23 +715,22 @@ class Main(Star):
             for s in sentences:
                 zh_text_cur = str(s.get("zh", "")).strip()
                 if not zh_text_cur:
-                    # 按优先级回退：英文 -> 日文 -> 韩文
                     zh_text_cur = (
                         str(s.get("en", "")).strip() or
                         str(s.get("ja", "")).strip() or
                         str(s.get("ko", "")).strip()
                     )
                 lang_text_cur = str(s.get(self.text_lang, "")).strip()
-                
+
                 zh_list.append(zh_text_cur)
                 lang_list.append(lang_text_cur)
-                
+
                 if self.display_lang == "auto":
                     display_cur = lang_text_cur if lang_text_cur else zh_text_cur
                 else:
                     display_cur = str(s.get(self.display_lang, "")).strip() or zh_text_cur
                 display_list.append(display_cur)
-                
+
                 emo = s.get("emotion", self.default_voice)
                 if emo not in self.emotions:
                     emo = self.default_voice
@@ -975,102 +957,134 @@ class Main(Star):
     # ================== 主入口 ==================
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        user_text = event.message_str
-        if not user_text:
-            return
-
-        self._migrate_legacy_memory(event)
-
-        # 获取中文、日语、情绪、分句中文
-        if self.use_llm_judge:
-            zh_text, ja_list, emo_list, display_list, lang_list = await self._get_llm_reply(event, user_text)
-        else:
-            zh_text = user_text
-            ja_list = [user_text]
-            emo_list = [self.default_voice]
-            display_list = [user_text]
-            lang_list = [user_text]
-
-        if not zh_text:
-            yield event.plain_result("模型生成失败，请检查 AstrBot 配置。")
-            return
-
-        # ========== 将用户输入和本插件回复保存到本地文件 ==========
         try:
-            # 获取当前会话的记忆文件路径
-            current_memory_file = self._get_memory_file(event)
+            user_text = event.message_str
+            if not user_text:
+                return
 
-            history_data = []
-            if current_memory_file.exists():
-                with open(current_memory_file, 'r', encoding='utf-8') as f:
-                    memory_data = json.load(f)
-                    history_data = memory_data.get("history", [])
+            self._migrate_legacy_memory(event)
+
+            # 获取中文、日语、情绪、分句中文
+            if self.use_llm_judge:
+                zh_text, ja_list, emo_list, display_list, lang_list = await self._get_llm_reply(event, user_text)
             else:
+                zh_text = user_text
+                ja_list = [user_text]
+                emo_list = [self.default_voice]
+                display_list = [user_text]
+                lang_list = [user_text]
+
+            if not zh_text:
+                yield event.plain_result("模型生成失败，请检查 AstrBot 配置。")
+                return
+
+            # ========== 将用户输入和本插件回复保存到本地文件 ==========
+            try:
+                # 获取当前会话的记忆文件路径
+                current_memory_file = self._get_memory_file(event)
+
                 history_data = []
+                if current_memory_file.exists():
+                    with open(current_memory_file, 'r', encoding='utf-8') as f:
+                        memory_data = json.load(f)
+                        history_data = memory_data.get("history", [])
+                else:
+                    history_data = []
 
-            history_data.append({"role": "user", "content": user_text})
-            history_data.append({"role": "assistant", "content": zh_text})
-
-            # 仅保留最近 60 条（30轮对话）
-            history_data = history_data[-60:]
-
-            # 保存时附带当前角色名，方便识别
-            with open(current_memory_file, 'w', encoding='utf-8') as f:
-                json.dump({"character_name": self.character_name, "history": history_data}, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.warning(f"保存本地记忆失败: {e}")
-        # =======================================================
-
-        # 打印完整的情绪和分句信息
-        logger.info(f"模型输出分句: {ja_list}")
-        logger.info(f"模型输出情绪: {emo_list}")
-
-        temp_wavs = []
-        failed_sentences = []
-
-        # 并行合成所有句子（消除逐句等待造成的空白）
-        tasks = [self._synthesize_sentence(ja_list[i], emo_list[i]) for i in range(len(ja_list))]
-        results = await asyncio.gather(*tasks)
-        
-        for i, temp_wav in enumerate(results):
-            if temp_wav:
-                temp_wavs.append(temp_wav)
-            else:
-                failed_sentences.append(ja_list[i])
-
-        if failed_sentences:
-            logger.warning(f"以下句子合成失败（已在语音中跳过，但文本仍会发送）: {failed_sentences}")
-
-        # 根据是否开启分开发送，决定发送方式
-        if self.send_voice_separately:
-            # 分开发送：每句话独立发送（带文字）
-            for idx, temp_wav in enumerate(temp_wavs):
-                if temp_wav and temp_wav.exists():
-                    sentence_text = display_list[idx] if idx < len(display_list) else zh_text
-                    yield event.chain_result([Plain(sentence_text), Record(file=str(temp_wav))])
-                    await asyncio.sleep(0.2)
-            # 清理临时文件
-            for temp_wav in temp_wavs:
+                # 尝试获取发送者ID和昵称
                 try:
-                    temp_wav.unlink(missing_ok=True)
-                except:
-                    pass
-        else:
-            # 合并发送（原有逻辑）
-            combined_audio = self._merge_wavs(temp_wavs)
-            if combined_audio:
-                combined_text = "".join(display_list) if display_list else zh_text
-                chain = [Plain(combined_text), Record(file=combined_audio)]
-                yield event.chain_result(chain)
+                    sender_id = event.get_sender_id()
+                except Exception:
+                    sender_id = ""
+                try:
+                    sender_name = event.get_sender_name()
+                except Exception:
+                    sender_name = ""
+
+                # 用户消息：带上发送者ID和昵称
+                history_data.append({
+                    "role": "user",
+                    "content": user_text,
+                    "sender_id": sender_id,
+                    "sender_name": sender_name
+                })
+                # Bot 回复
+                history_data.append({"role": "assistant", "content": zh_text})
+
+                # 仅保留最近 60 条（30轮对话）
+                history_data = history_data[-60:]
+
+                # 保存时附带当前角色名，方便识别
+                with open(current_memory_file, 'w', encoding='utf-8') as f:
+                    json.dump({"character_name": self.character_name, "history": history_data}, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.warning(f"保存本地记忆失败: {e}")
+            # =======================================================
+
+            # 打印完整的情绪和分句信息
+            logger.info(f"模型输出分句: {ja_list}")
+            logger.info(f"模型输出情绪: {emo_list}")
+
+            temp_wavs = []
+            failed_sentences = []
+
+            # 并行合成所有句子
+            tasks = [self._synthesize_sentence(ja_list[i], emo_list[i]) for i in range(len(ja_list))]
+            results = await asyncio.gather(*tasks)
+            
+            for i, temp_wav in enumerate(results):
+                if temp_wav:
+                    temp_wavs.append(temp_wav)
+                else:
+                    failed_sentences.append(ja_list[i])
+
+            if failed_sentences:
+                logger.warning(f"以下句子合成失败（已在语音中跳过，但文本仍会发送）: {failed_sentences}")
+
+            # 根据是否开启分开发送，决定发送方式
+            if self.separate_send and self.send_voice_separately and event.get_platform_name() != "qq_official":
+                # 非 QQ官方：语音分开发送
+                for idx, temp_wav in enumerate(temp_wavs):
+                    if temp_wav and temp_wav.exists():
+                        sentence_text = display_list[idx] if idx < len(display_list) else zh_text
+                        yield event.chain_result([Plain(sentence_text), Record(file=str(temp_wav))])
+                        await asyncio.sleep(0.2)
                 for temp_wav in temp_wavs:
                     try:
                         temp_wav.unlink(missing_ok=True)
                     except:
                         pass
             else:
-                logger.error("所有 TTS 句子均合成失败，已降级为纯文本回复。")
-                yield event.plain_result(zh_text)
+                # 合并发送
+                combined_audio = self._merge_wavs(temp_wavs)
+                if combined_audio:
+                    if self.separate_send and self.text_separate and event.get_platform_name() != "qq_official":
+                        yield event.chain_result([Record(file=combined_audio)])
+                        for text in display_list:
+                            yield event.plain_result(text)
+                            await asyncio.sleep(0.2)
+                    else:
+                        combined_text = "\n".join(display_list) if self.separate_send and self.send_voice_separately and event.get_platform_name() == "qq_official" else "".join(display_list)
+                        chain = [Plain(combined_text), Record(file=combined_audio)]
+                        yield event.chain_result(chain)
+                    
+                    for temp_wav in temp_wavs:
+                        try:
+                            temp_wav.unlink(missing_ok=True)
+                        except:
+                            pass
+                else:
+                    logger.error("所有 TTS 句子均合成失败，已降级为纯文本回复。")
+                    if self.separate_send and self.text_separate and event.get_platform_name() != "qq_official":
+                        for text in display_list:
+                            yield event.plain_result(text)
+                    else:
+                        yield event.plain_result(zh_text)
 
-        # 最后停止事件，避免主程序重复回复
-        self._cleanup_voice_cache()
-        event.stop_event()
+            # 最后停止事件，避免主程序重复回复
+            self._cleanup_voice_cache()
+            event.stop_event()
+        except Exception as e:
+            logger.error(f"on_message 处理异常: {type(e).__name__}: {e}")
+            if event.get_platform_name() == "qq_official":
+                logger.warning("QQ官方平台被动回复次数受限，“语音分开发送/文本分开发送”，或者将分开发送关闭。")
