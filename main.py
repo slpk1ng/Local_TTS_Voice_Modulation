@@ -165,6 +165,12 @@ class Main(Star):
                 ["POST"],
                 "删除选中的记忆文件"
             )
+            self.context.register_web_api(
+                f"/{plugin_name}/api/history/delete_messages",
+                self._api_delete_messages,
+                ["POST"],
+                "删除指定消息"
+            )
             logger.info("已注册 Memory Manager WebAPI。")
         except Exception as e:
             logger.error(f"注册 WebAPI 失败: {e}")
@@ -267,6 +273,44 @@ class Main(Star):
             })
         except Exception as e:
             logger.error(f"读取聊天记录失败: {e}")
+            return json_response({"success": False, "error": str(e)}, status_code=500)
+
+    async def _api_delete_messages(self):
+        """删除指定记忆文件中的若干条消息（按索引）"""
+        try:
+            payload = await request.json(default={})
+            filename = payload.get("filename", "")
+            indices = payload.get("indices", [])
+            if not re.match(r'^[A-Za-z0-9_\-]+\.json$', filename):
+                return json_response({"success": False, "error": "非法文件名"}, status_code=400)
+            if not isinstance(indices, list) or not all(isinstance(i, int) for i in indices):
+                return json_response({"success": False, "error": "索引必须为整数列表"}, status_code=400)
+
+            file_path = (self.data_path / filename).resolve()
+            if self.data_path.resolve() not in file_path.parents:
+                return json_response({"success": False, "error": "路径不安全"}, status_code=403)
+            if not file_path.exists():
+                return json_response({"success": False, "error": "文件不存在"}, status_code=404)
+
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            history = data.get("history", [])
+
+            # 从后往前删除，避免索引偏移
+            valid_indices = sorted(set(indices), reverse=True)
+            deleted_count = 0
+            for idx in valid_indices:
+                if 0 <= idx < len(history):
+                    history.pop(idx)
+                    deleted_count += 1
+
+            data["history"] = history
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+            return json_response({"success": True, "deleted_count": deleted_count})
+        except Exception as e:
+            logger.error(f"删除消息失败: {e}")
             return json_response({"success": False, "error": str(e)}, status_code=500)
 
     def _migrate_legacy_memory(self, event: AstrMessageEvent):
