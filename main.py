@@ -38,6 +38,7 @@ class Main(Star):
         self.use_llm_judge = config.get("llm_judge", True)
         self.context = context
         self.separate_send = config.get("separate_send", False)
+        self.only_private = config.get("only_private", False)
 
         # ========== LLM 配置（本地直连） ==========
         self.llm_model_name = config.get("llm_model_name", "") or "qwen3.5:4b"
@@ -76,6 +77,7 @@ class Main(Star):
         self.voice_transition = config.get("voice_transition", True)
         self.send_voice_separately = config.get("send_voice_separately", False)
         self.text_separate = config.get("text_separate", False)
+        self.dynamic_sleep = config.get("dynamic_sleep", True)
         self.breathing_gap_ms = config.get("breathing_gap_ms", 100)
         self.crossfade_ms = config.get("crossfade_ms", 300)
         self.streaming_mode = config.get("streaming_mode", False)
@@ -645,6 +647,7 @@ class Main(Star):
             self._migrate_legacy_memory(event)
             emotion_keys = list(self.emotions.keys())
 
+            # ========== 从本地文件读取历史 ==========
             history_messages = []
             task_context = ""
 
@@ -675,6 +678,7 @@ class Main(Star):
             else:
                 logger.warning("未找到当前会话的记忆文件，使用空历史。")
 
+            # ========== 组装消息序列 ==========
             emotion_keys = list(self.emotions.keys())
             system_content = f"{self.system_prompt}\n【情绪可选列表】{', '.join(emotion_keys)}"
             messages = [{"role": "system", "content": system_content}]
@@ -683,6 +687,7 @@ class Main(Star):
                 messages.append({"role": "user", "content": f"（重申之前的指令）{task_context}"})
             messages.append({"role": "user", "content": user_text})
 
+            # ====== 发送请求 ======
             payload = {
                 "model": self.llm_model_name,
                 "messages": messages,
@@ -691,7 +696,7 @@ class Main(Star):
                 "options": {
                     "num_ctx": self.num_ctx,
                     "temperature": min(self.temperature, 1.0),
-                    "num_predict": 4096
+                    "num_predict": -1
                 }
             }
 
@@ -699,7 +704,7 @@ class Main(Star):
                 if self.llm_backend == "openai":
                     url = f"{self.llm_base_url}/chat/completions"
                     headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
-                    payload["max_tokens"] = 4096
+                    payload["max_tokens"] = -1
                     if not self.enable_think:
                         payload["response_format"] = {"type": "json_object"}
                     resp = await client.post(url, json=payload, headers=headers)
@@ -712,37 +717,21 @@ class Main(Star):
                     data = resp.json()
                     message = data.get("message", {})
                     if self.enable_think:
+                        # 尝试从 message 中获取思考内容
                         thinking = message.get("thinking") or message.get("reasoning_content")
                         if thinking:
                             logger.info(f"【模型思考】: {thinking}")
                     content = message.get("content") or ""
 
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                content = json_match.group(0)
-            else:
+            # ====== 提取 JSON（增强鲁棒性） ======
+            json_obj = self._extract_json(content)
+            if json_obj is None:
                 logger.error("未找到 JSON 对象，可能模型输出为空或格式错误。")
                 return None, None, None, None, None
 
-            content = content.strip()
-            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
-            try:
-                data = json.loads(content)
-            except json.JSONDecodeError as e:
-                logger.warning(f"JSON 解析失败，尝试修复: {e}")
-                if not content.endswith('}'):
-                    content += ']}'
-                else:
-                    if content.count('[') > content.count(']'):
-                        content += ']'
-                    if not content.endswith('}'):
-                        content += '}'
-                try:
-                    data = json.loads(content)
-                except json.JSONDecodeError as e2:
-                    logger.error(f"JSON 修复失败: {e2}，原始内容: {content[:200]}")
-                    return None, None, None, None, None
+            data = json_obj
 
+            # ====== 解析 sentences ======
             if "sentences" in data:
                 sentences = data["sentences"]
             else:
@@ -790,6 +779,55 @@ class Main(Star):
         except Exception as e:
             logger.error(f"LLM 处理失败: {type(e).__name__}: {e}")
             return None, None, None, None, None
+
+    def _extract_json(self, text: str):
+        """从可能包含思考过程的文本中提取最后一个完整 JSON 对象"""
+        if not text:
+            return None
+
+        # 尝试直接解析
+        try:
+            return json.loads(text)
+        except:
+            pass
+
+        # 去除 ```json ``` 包装
+        cleaned = text.strip()
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned)
+        try:
+            return json.loads(cleaned)
+        except:
+            pass
+
+        # 栈匹配法：从后往前找最后一个完整 JSON 对象
+        start_indices = [i for i, char in enumerate(cleaned) if char == '{']
+        for start in reversed(start_indices):
+            depth = 0
+            in_string = False
+            escape = False
+            for i in range(start, len(cleaned)):
+                char = cleaned[i]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif char == '\\':
+                        escape = True
+                    elif char == '"':
+                        in_string = False
+                else:
+                    if char == '"':
+                        in_string = True
+                    elif char == '{':
+                        depth += 1
+                    elif char == '}':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                return json.loads(cleaned[start:i+1])
+                            except:
+                                break
+            # 若未找到完整 JSON，继续尝试下一个起点
+        return None
         
     async def _synthesize_sentence(self, text: str, emotion: str):
         """
@@ -998,9 +1036,43 @@ class Main(Star):
             logger.error(f"合并音频失败: {e}")
             return None
 
+    def _get_audio_duration(self, file_path: str) -> float:
+        """获取音频文件时长（秒）"""
+        try:
+            import wave
+            with wave.open(file_path, 'rb') as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate > 0:
+                    return frames / rate
+        except Exception:
+            pass
+        return 1.0  # 默认回退为 1 秒
+
     # ================== 主入口 ==================
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
+        # 仅响应私聊（可选）
+        if self.only_private and not event.is_private_chat():
+            return
+
+        # ========== 新增：如果是群聊，只响应被 @ 的情况 ==========
+        if not event.is_private_chat():
+            # 尝试检测是否 @ 了当前机器人
+            try:
+                # 从消息组件中提取 At 组件
+                from astrbot.api.message_components import At
+                # 获取机器人的QQ号（或者通过 self.character_key 找）
+                bot_qq = str(event.self_id) # self_id 是机器人的ID
+                at_targets = [comp.qq for comp in event.message_obj.message if isinstance(comp, At)]
+                
+                # 如果消息里没有 @ 机器人，或者 @ 的是别人，直接返回（不触发）
+                if str(bot_qq) not in [str(q) for q in at_targets]:
+                    logger.info(f"未 @ 机器人，群聊消息忽略: {event.message_str[:20]}")
+                    return
+            except Exception:
+                # 如果解析失败，兜底直接放行
+                pass
         try:
             user_text = event.message_str
             if not user_text:
@@ -1019,7 +1091,11 @@ class Main(Star):
                 lang_list = [user_text]
 
             if not zh_text:
-                yield event.plain_result("模型生成失败，请检查 AstrBot 配置。")
+                await self.context.send_message(
+                    event.unified_msg_origin,
+                    MessageChain().message("模型生成失败，请检查 AstrBot 配置。")
+                )
+                event.stop_event()
                 return
 
             # ========== 将用户输入和本插件回复保存到本地文件 ==========
@@ -1085,33 +1161,73 @@ class Main(Star):
             if failed_sentences:
                 logger.warning(f"以下句子合成失败（已在语音中跳过，但文本仍会发送）: {failed_sentences}")
 
-            # 根据是否开启分开发送，决定发送方式
-            if self.separate_send and self.send_voice_separately and event.get_platform_name() != "qq_official":
-                # 非 QQ官方：语音分开发送
+            # ========== 发送逻辑（双平台自适应） ==========
+            # 判断当前平台类型
+            is_aiocqhttp = event.get_platform_name() == "aiocqhttp"   # OneBot v11
+            is_qq_official = event.get_platform_name() == "qq_official"  # QQ官方
+
+            if self.separate_send and self.send_voice_separately:
+                # 语音分开发送
                 for idx, temp_wav in enumerate(temp_wavs):
                     if temp_wav and temp_wav.exists():
                         sentence_text = display_list[idx] if idx < len(display_list) else zh_text
-                        yield event.chain_result([Plain(sentence_text), Record(file=str(temp_wav))])
-                        await asyncio.sleep(0.2)
-                for temp_wav in temp_wavs:
-                    try:
-                        temp_wav.unlink(missing_ok=True)
-                    except:
-                        pass
+                        if not sentence_text:
+                            sentence_text = zh_text
+
+                        if is_aiocqhttp:
+                            # OneBot v11 使用被动回复
+                            yield event.chain_result([Plain(sentence_text), Record(file=str(temp_wav))])
+                        else:
+                            # 其他平台（如QQ官方）主动发送
+                            await self.context.send_message(
+                                event.unified_msg_origin,
+                                MessageChain([Plain(sentence_text), Record(file=str(temp_wav))])
+                            )
+
+                        if self.dynamic_sleep:
+                            await asyncio.sleep(self._get_audio_duration(str(temp_wav)) + 0.5)
+                        else:
+                            await asyncio.sleep(0.2)
+
+                        try:
+                            temp_wav.unlink(missing_ok=True)
+                        except:
+                            pass
             else:
-                # 合并发送
+                # 合并发送逻辑
                 combined_audio = self._merge_wavs(temp_wavs)
                 if combined_audio:
-                    if self.separate_send and self.text_separate and event.get_platform_name() != "qq_official":
-                        yield event.chain_result([Record(file=combined_audio)])
-                        for text in display_list:
-                            yield event.plain_result(text)
-                            await asyncio.sleep(0.2)
+                    if self.separate_send and self.text_separate:
+                        if is_aiocqhttp:
+                            # OneBot v11 被动回复
+                            yield event.chain_result([Record(file=combined_audio)])
+                            for text in display_list:
+                                yield event.plain_result(text)
+                                await asyncio.sleep(0.2)
+                        else:
+                            # 其他平台主动发送
+                            await self.context.send_message(
+                                event.unified_msg_origin,
+                                MessageChain([Record(file=combined_audio)])
+                            )
+                            for text in display_list:
+                                await self.context.send_message(
+                                    event.unified_msg_origin,
+                                    MessageChain().message(text)
+                                )
+                                await asyncio.sleep(0.2)
                     else:
-                        combined_text = "\n".join(display_list) if self.separate_send and self.send_voice_separately and event.get_platform_name() == "qq_official" else "".join(display_list)
-                        chain = [Plain(combined_text), Record(file=combined_audio)]
-                        yield event.chain_result(chain)
-                    
+                        combined_text = "".join(display_list) if display_list else zh_text
+                        if is_aiocqhttp:
+                            # OneBot v11 被动回复
+                            yield event.chain_result([Plain(combined_text), Record(file=combined_audio)])
+                        else:
+                            # 其他平台主动发送
+                            await self.context.send_message(
+                                event.unified_msg_origin,
+                                MessageChain([Plain(combined_text), Record(file=combined_audio)])
+                            )
+
                     for temp_wav in temp_wavs:
                         try:
                             temp_wav.unlink(missing_ok=True)
@@ -1119,11 +1235,13 @@ class Main(Star):
                             pass
                 else:
                     logger.error("所有 TTS 句子均合成失败，已降级为纯文本回复。")
-                    if self.separate_send and self.text_separate and event.get_platform_name() != "qq_official":
-                        for text in display_list:
-                            yield event.plain_result(text)
-                    else:
+                    if is_aiocqhttp:
                         yield event.plain_result(zh_text)
+                    else:
+                        await self.context.send_message(
+                            event.unified_msg_origin,
+                            MessageChain().message(zh_text)
+                        )
 
             # 最后停止事件，避免主程序重复回复
             self._cleanup_voice_cache()
@@ -1131,4 +1249,4 @@ class Main(Star):
         except Exception as e:
             logger.error(f"on_message 处理异常: {type(e).__name__}: {e}")
             if event.get_platform_name() == "qq_official":
-                logger.warning("QQ官方平台被动回复次数受限，“语音分开发送/文本分开发送”，或者将分开发送关闭。")
+                logger.warning("QQ官方平台被动回复次数受限，主动发送同样需要权限，若报错请检查主动消息权限。")

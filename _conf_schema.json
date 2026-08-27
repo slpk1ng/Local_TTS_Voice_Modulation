@@ -1,6 +1,6 @@
 {
   "hide_gsv_options": {
-    "description": "隐藏高级 GSV 参数",
+    "description": "【配好参数后可选】隐藏高级 GSV 参数",
     "hint": "开启后，将隐藏大部分 GPT-SoVITS 推理细节参数，简化配置界面。",
     "type": "bool",
     "default": false
@@ -20,7 +20,7 @@
   },
   "llm_api_key": {
     "description": "本地模型API Key",
-    "hint": "使用 Ollama 时留空。使用 OpenAI 兼容接口时通常填任意非空字符串（如 lm-studio）或 vLLM 填 EMPTY。",
+    "hint": "通常填任意非空字符串（如 lm-studio）或 vLLM 填 EMPTY。",
     "type": "string",
     "default": "",
     "condition": { "llm_backend": "openai" }
@@ -46,7 +46,7 @@
   },
   "enable_think": {
     "description": "开启深度思考",
-    "hint": "开启后，模型会在回答前先内部推理（用于增强上下文理解和逻辑）。注意：会让响应变慢。默认为关闭。",
+    "hint": "开启后，模型会在回答前先内部推理（用于增强上下文理解和逻辑）。注意：会让响应变慢。默认为关闭。报错表示模型不支持深度思考。",
     "type": "bool",
     "default": false,
     "condition": { "llm_backend": "ollama" }
@@ -224,9 +224,10 @@
   },
   "json_prompt": {
     "description": "【可自定义】【必填】JSON提示词",
-    "hint": "可保持默认，得到的语言和文字分别为日语和中文。强制模型输出指定 JSON 结构的格式要求。只建议修改每个\" \"内的内容，其中，不要修改sentences和emotion。插件启动时合并一次，之后发送给 LLM 时固定不变。",
+    "hint": "可保持默认，得到的语言和文字分别为日语（ja）和中文（zh）。强制模型输出指定 JSON 结构的格式要求。只建议修改每个\" \"内的内容，其中，不要修改sentences和emotion。插件启动时合并一次，之后发送给 LLM 时固定不变。",
     "type": "text",
-    "default": "【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为：{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}, {\"zh\": \"第二句中文\", \"ja\": \"第二句日语\", \"emotion\": \"另一种情绪\"}]}等更多情绪均可，禁止输出任何解释或非JSON格式的文本"
+    "editor": "json",
+    "default": "【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为：{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}, {\"zh\": \"第二句中文\", \"ja\": \"第二句日语\", \"emotion\": \"另一种情绪\"}]}等更多情绪均可。【最终输出规则】最终输出必须严格只包含JSON对象，绝对禁止输出任何思考过程、解释、非JSON文本或Markdown代码块。所有的推理和思考都只能在内部进行，最终回复只能是JSON格式。"
   },
   "supplement_prompt": {
     "description": "【可自定义】补充提示词",
@@ -259,6 +260,13 @@
     "default": false,
     "condition": { "separate_send": true }
   },
+  "dynamic_sleep": {
+    "description": "根据语音时长动态等待",
+    "hint": "开启后，分开发送时会根据音频实际时长动态等待（音频播放完 + 0.5秒缓冲），更像真人说话；关闭后固定等待 0.2 秒。",
+    "type": "bool",
+    "default": true,
+    "condition": { "send_voice_separately": true }
+  },
   "text_separate": {
     "description": "文本分开发送",
     "hint": "开启后，在语音合并发送的前提下，文本将按句逐条发送（ QQ 官方平台被动回复次数受限(一次回复最多 5 条消息)，报错时建议关闭此选项）。",
@@ -266,11 +274,17 @@
     "default": false,
     "condition": { "separate_send": true }
   },
-  "auto_start_tts": {
-    "description": "一键启动本地 TTS 服务",
-    "hint": "开启后，插件会自动检测后台服务是否在线。如果没有在线，将自动启动 GPT-SoVITS 的 api_v2.py。可在平台日志查看运行状态。",
+  "only_private": {
+    "description": "仅响应私聊",
+    "hint": "开启后，插件只会响应私聊消息，忽略所有群聊消息；关闭后， bot 回复需要 @ ",
     "type": "bool",
     "default": false
+  },
+  "auto_start_tts": {
+    "description": "【推荐开启】一键启动本地 TTS 服务",
+    "hint": "开启后，插件会自动检测后台服务是否在线。如果没有在线，将自动启动 GPT-SoVITS 的 api_v2.py。可在平台日志查看运行状态。",
+    "type": "bool",
+    "default": true
   },
   "tts_start_script": {
     "description": "【必填】TTS 后端启动命令",
@@ -295,7 +309,7 @@
   },
   "display_lang": {
     "description": "显示文本语言",
-    "hint": "选择发送消息时文字的语言，可选：中文（zh）、日语（ja）、英语（en）、韩语（ko）或跟随语音（auto）。",
+    "hint": "选择发送消息时文字的语言，可选：中文（zh）、日语（ja）、英语（en）、韩语（ko）或跟随语音（auto）；修改后请同步替换JSON提示词中的zh字样。",
     "type": "string",
     "default": "zh",
     "options": ["zh", "ja", "en", "ko", "auto"],
@@ -330,7 +344,7 @@
   },
   "enable_default_emotions": {
     "description": "是否启用插件默认的丛雨语气",
-    "hint": "开启：在插件的6个默认丛雨语气（pingjing等）的基础上，额外添加你配置的新语气。关闭：完全只使用你在【情绪映射配置】中手动添加的语气，忽略默认文件夹里的6个。（仅当添加了自定义情绪映射时，此设置才有意义）",
+    "hint": "开启：在插件的6个默认丛雨语气（pingjing等，需要自行下载README.md的文档内的丛雨语气包链接）的基础上，额外添加你配置的新语气。关闭：完全只使用你在【情绪映射配置】中手动添加的语气，忽略默认文件夹里的6个。（仅当添加了自定义情绪映射时，此设置才有意义）",
     "type": "bool",
     "default": true
   },
