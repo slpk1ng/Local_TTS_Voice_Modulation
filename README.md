@@ -17,7 +17,7 @@
 
 - GPT-SoVITS ： [https://github.com/RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 。
 
-- 查看此插件详细教程：[https://github.com/slpk1ng/Local_TTS_Voice_Modulation/main/guide.md](https://github.com/slpk1ng/Local_TTS_Voice_Modulation/main/guide.md)。
+- 查看此插件详细教程：[https://github.com/slpk1ng/Local_TTS_Voice_Modulation/blob/main/guide.md](https://github.com/slpk1ng/Local_TTS_Voice_Modulation/blob/main/guide.md)。
 
 ## 获取最新版本请优先关注 [https://github.com/slpk1ng/Local_TTS_Voice_Modulation](https://github.com/slpk1ng/Local_TTS_Voice_Modulation) 
 
