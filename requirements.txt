@@ -1,3 +1,8 @@
-httpx
-PyYAML
+psutil
+mss
+Pillow
 numpy
+httpx
+# GPU 监控库（按需安装）
+nvidia-ml-py>=11.0.0 ; platform_machine == "x86_64" or platform_machine == "AMD64"
+pyamdsmi>=6.0.0 ; platform_system == "Linux"

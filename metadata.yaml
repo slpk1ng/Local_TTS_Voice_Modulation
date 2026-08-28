@@ -1,20 +1,16 @@
-name: Local_TTS_Voice_Modulation
-display_name: 本地TTS语气变化
+name: Aftermath
+display_name: 余波~
 short_desc: 当你发现有bug时，可前往本插件的仓库检查最新版哦。
-desc: 基于 AstrBot 的一个小白也会使用的智能情绪 TTS 插件。它调用模型自动判断语境情绪，自动匹配“高兴、害羞”等对应的参考音频，合成极具感情色彩的语音。支持自动扫描外部目录，参数高度可调，轻松适配大众用户。
-version: v1.2.2
-author: slpk1ng
-support_platforms:
-  - aiocqhttp
-  - qq_official_webhook
-  - qq_official
+desc: 当你打完游戏或做完某个大项目(或更多情景)时，bot会发送符合你设置的人设的句子并回应你！监控CPU/GPU/自定义进程占用和屏幕变化，当占用超过阈值且屏幕有明显变化时截图，占用下降后通过模型生成复盘并主动发送到指定会话。
+version: v1.0.2
+author: Slpk1ng
+repo: https://github.com/slpk1ng/Aftermath
 logo: "./logo.png"
-category: TTS语气变化
-repo: https://github.com/slpk1ng/Local_TTS_Voice_Modulation
+support_platforms:
+  - qq_official
+category: 娱乐
 tags:
-  - TTS 
-  - TTS语气变化 
-  - 文字转语音 
-  - 工具 
-  - 语音 
-  - 本地
+  - 娱乐
+  - 游戏
+  - AI
+  - 复盘
