@@ -188,4 +188,4 @@ D:/tts/yuqi/
 └── ...
 ```
 
-
+## 更新日志详见 [https://github.com/slpk1ng/Local_TTS_Voice_Modulation/blob/main/CHANGELOG.md](https://github.com/slpk1ng/Local_TTS_Voice_Modulation/blob/main/CHANGELOG.md)
