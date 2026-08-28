@@ -51,6 +51,9 @@ class Main(Star):
         self.llm_timeout = config.get("llm_timeout", 120)
         self.display_lang = config.get("display_lang", "zh")
         self.isolated_session = config.get("isolated_session", False)
+        self.image_caption_model_name = config.get("image_caption_model_name", "")
+        self.image_caption_timeout = config.get("image_caption_timeout", 90)
+        self.image_reply_mode = config.get("image_reply_mode", "auto")
 
         # ========== TTS 配置 ==========
         self._tts_start_lock = threading.Lock()
@@ -210,16 +213,52 @@ class Main(Star):
             for f in self.data_path.glob("*_*.json"):
                 try:
                     role_name = f.name.split("_")[0] if "_" in f.name else "未知"
+                    
+                    # 读取文件内容，获取角色中文名
+                    character_name = role_name
                     with open(f, 'r', encoding='utf-8') as fh:
                         data = json.load(fh)
+                    if data.get("character_name"):
+                        character_name = data["character_name"]
+                    
                     history = data.get("history", [])
                     last_sentence = ""
                     for msg in reversed(history):
                         if msg.get("role") == "assistant":
                             last_sentence = str(msg.get("content", ""))[:50]
                             break
+                    
+                    # ===== 解析文件名，生成显示标题 =====
+                    if "private_" in f.name:
+                        # 私聊：提取 sender_id
+                        sender_id = f.name.split("private_")[-1].replace(".json", "")
+                        # 从历史中找最近的 sender_name
+                        sender_name = None
+                        for msg in reversed(history):
+                            if msg.get("role") == "user" and msg.get("sender_name"):
+                                sender_name = msg["sender_name"]
+                                break
+                        if not sender_name:
+                            sender_name = sender_id
+                        display_name = f"{character_name}和{sender_name}的聊天"
+                    else:
+                        # 群聊：提取 group_id
+                        group_id = f.name.split("group_")[-1].replace(".json", "")
+                        group_name = f"群聊{group_id}"
+                        # 尝试通过 aiocqhttp 获取群名
+                        try:
+                            platform_inst = self.context.get_platform_inst("aiocqhttp")
+                            if platform_inst:
+                                client = platform_inst.get_client()
+                                ret = await client.api.call_action("get_group_info", group_id=int(group_id))
+                                group_name = ret.get("group_name", group_name)
+                        except Exception:
+                            pass
+                        display_name = f"{character_name}在{group_name}的聊天"
+                    
                     memories.append({
-                        "filename": f.name,
+                        "filename": f.name,          # 原来的文件名（用于后端操作）
+                        "display_name": display_name, # 新增：用于前端展示的主标题
                         "last_sentence": last_sentence,
                         "modified_time": f.stat().st_mtime,
                         "role_name": role_name
@@ -326,7 +365,6 @@ class Main(Star):
             # 当前会话已有记忆，不覆盖，仅提示
             logger.info("检测到旧记忆文件，但当前会话已有独立记忆，跳过迁移。")
             return
-
         try:
             with open(legacy_file, 'r', encoding='utf-8') as f:
                 legacy_data = json.load(f)
@@ -657,6 +695,8 @@ class Main(Star):
                     history_data = json.load(f)
                     history_data = history_data.get("history", [])
 
+                    # 合并连续同角色消息，避免多段 assistant 被分开传入 LLM
+                    merged_history = []
                     for msg in history_data[-10:]:
                         role = msg.get("role", "user")
                         content = str(msg.get("content", ""))
@@ -666,7 +706,11 @@ class Main(Star):
                             sender_id = msg.get("sender_id", "")
                             if sender_id:
                                 content = f"[用户ID:{sender_id}] {content}"
-                        history_messages.append({"role": role, "content": content})
+                        if merged_history and merged_history[-1]["role"] == role:
+                            merged_history[-1]["content"] += "\n" + content
+                        else:
+                            merged_history.append({"role": role, "content": content})
+                    history_messages = merged_history
 
                     task_keywords = ["提醒", "记住", "要求", "命令", "叫我", "以后", "别忘"]
                     for msg in reversed(history_data):
@@ -778,6 +822,150 @@ class Main(Star):
             return zh_text, lang_list, emo_list, display_list, lang_list
         except Exception as e:
             logger.error(f"LLM 处理失败: {type(e).__name__}: {e}")
+            return None, None, None, None, None
+
+    async def _get_image_reply(self, event: AstrMessageEvent, user_text: str, image_urls: list):
+        """调用识图模型，根据图片生成台词JSON（兼容 Ollama 与 OpenAI 兼容接口）"""
+        try:
+            # 读取历史
+            history_messages = []
+            current_memory_file = self._get_memory_file(event)
+            if current_memory_file.exists():
+                with open(current_memory_file, 'r', encoding='utf-8') as f:
+                    history_data = json.load(f)
+                    history_data = history_data.get("history", [])
+                    for msg in history_data[-10:]:
+                        role = msg.get("role", "user")
+                        content = str(msg.get("content", ""))
+                        if role not in ["user", "assistant"]:
+                            continue
+                        history_messages.append({"role": role, "content": content})
+
+            # 组装提示词
+            system_content = f"{self.system_prompt}\n【情绪可选列表】{', '.join(list(self.emotions.keys()))}"
+            prompt_text = f"用户发来了一张图片，请仔细观察图片内容，结合你的角色人设（你是{self.character_name}），根据图片内容说几句话（可以是吐槽、评价、撒娇等）。\n当前对话历史：{json.dumps(history_messages, ensure_ascii=False)}\n用户附加文字：{user_text}"
+
+            # ========== 统一处理图片数据 ==========
+            import base64, os
+            images_for_payload = []
+            for img_path in image_urls:
+                # 如果本地路径，读取转 base64
+                import base64, os, httpx
+
+                for img_path in image_urls:
+                    # 本地文件
+                    if os.path.exists(img_path):
+                        try:
+                            with open(img_path, 'rb') as f:
+                                b64_data = base64.b64encode(f.read()).decode('utf-8')
+                            images_for_payload.append(b64_data)
+                        except Exception as e:
+                            logger.error(f"读取本地图片失败: {e}")
+                    # HTTP(S) URL - 下载并转 base64（Ollama 不支持直接传 URL）
+                    elif img_path.startswith("http"):
+                        try:
+                            async with httpx.AsyncClient(timeout=30) as client:
+                                resp = await client.get(img_path)
+                                resp.raise_for_status()
+                                b64_data = base64.b64encode(resp.content).decode('utf-8')
+                            images_for_payload.append(b64_data)
+                        except Exception as e:
+                            logger.error(f"下载图片失败: {e}")
+                    else:
+                        logger.warning(f"未知图片路径格式: {img_path}")
+
+            if not images_for_payload:
+                logger.warning("没有有效的图片数据，无法识图")
+                return None, None, None, None, None
+
+            # ========== 根据后端类型分发请求 ==========
+            if self.llm_backend == "ollama":
+                # Ollama 使用 /api/chat，图片参数为 images（base64 或 URL）
+                payload = {
+                    "model": self.image_caption_model_name,
+                    "messages": [
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": prompt_text, "images": images_for_payload}
+                    ],
+                    "stream": False,
+                    "think": False,
+                    "options": {"temperature": 0.7, "num_predict": 512}
+                }
+                endpoint = f"{self.llm_base_url}/api/chat"
+                headers = {}
+            else:
+                # OpenAI 兼容接口（LM Studio、vLLM 等），使用 /v1/chat/completions
+                # 图片参数必须转换为 data URI
+                content_parts = []
+                for img_b64 in images_for_payload:
+                    if img_b64.startswith("http"):
+                        content_parts.append({"type": "image_url", "image_url": {"url": img_b64}})
+                    else:
+                        # 未知 mime，默认 jpg（可优化）
+                        content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
+
+                content_parts.append({"type": "text", "text": prompt_text})
+
+                payload = {
+                    "model": self.image_caption_model_name,
+                    "messages": [
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": content_parts}
+                    ],
+                    "stream": False,
+                    "temperature": 0.7,
+                    "max_tokens": 512
+                }
+                # 处理 base URL（可能不带 /v1）
+                base_url = self.llm_base_url.rstrip("/")
+                if not base_url.endswith("/v1"):
+                    base_url += "/v1"
+                endpoint = f"{base_url}/chat/completions"
+                headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
+
+            # ========== 发送请求 ==========
+            async with httpx.AsyncClient(timeout=self.image_caption_timeout) as client:
+                resp = await client.post(endpoint, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+
+                if self.llm_backend == "ollama":
+                    content = data.get("message", {}).get("content", "")
+                else:
+                    content = data["choices"][0]["message"]["content"]
+
+            # ========== 提取 JSON ==========
+            json_obj = self._extract_json(content)
+            if json_obj is None:
+                logger.error("识图模型未输出JSON，使用默认回复")
+                return "看到图片啦，不过还没想好说什么呢～", ["看到图片啦，不过还没想好说什么呢～"], [self.default_voice], ["看到图片啦，不过还没想好说什么呢～"], ["看到图片啦，不过还没想好说什么呢～"]
+
+            data = json_obj
+            if "sentences" in data:
+                sentences = data["sentences"]
+            else:
+                sentences = [{"zh": data.get("zh", "嗯嗯"), "ja": data.get("ja", "嗯嗯"), "emotion": data.get("emotion", self.default_voice)}]
+
+            # ========== 解析输出 ==========
+            zh_list = []
+            lang_list = []
+            display_list = []
+            emo_list = []
+            for s in sentences:
+                zh_text_cur = str(s.get("zh", "")).strip()
+                lang_text_cur = str(s.get(self.text_lang, "")).strip()
+                zh_list.append(zh_text_cur)
+                lang_list.append(lang_text_cur)
+                display_cur = str(s.get(self.display_lang, "")).strip() or zh_text_cur
+                display_list.append(display_cur)
+                emo = s.get("emotion", self.default_voice)
+                if emo not in self.emotions:
+                    emo = self.default_voice
+                emo_list.append(emo)
+
+            return "".join(zh_list), lang_list, emo_list, display_list, lang_list
+        except Exception as e:
+            logger.error(f"识图模型处理失败: {e}")
             return None, None, None, None, None
 
     def _extract_json(self, text: str):
@@ -1049,47 +1237,130 @@ class Main(Star):
             pass
         return 1.0  # 默认回退为 1 秒
 
+    async def _has_image(self, event: AstrMessageEvent) -> bool:
+        try:
+            from astrbot.api.message_components import Image, File, Reply
+            # 直接检查消息链
+            for comp in event.message_obj.message:
+                if isinstance(comp, (Image, File)):
+                    return True
+            # 检查引用消息（Reply 组件）
+            for comp in event.message_obj.message:
+                if isinstance(comp, Reply):
+                    # 尝试通过平台 API 获取被引用消息的内容
+                    try:
+                        platform_name = event.get_platform_name()
+                        if platform_name == "aiocqhttp":
+                            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+                            if isinstance(event, AiocqhttpMessageEvent):
+                                client = event.bot
+                                msg_id = comp.id
+                                ret = await client.api.call_action("get_msg", message_id=msg_id)
+                                # 检查原始消息中是否包含图片
+                                for seg in ret.get("message", []):
+                                    if seg.get("type") in ["image", "file"]:
+                                        return True
+                    except Exception as e:
+                        logger.warning(f"获取引用消息内容失败: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"检测图片失败: {e}")
+            return False
+
+    async def _get_image_urls(self, event: AstrMessageEvent) -> list:
+        try:
+            from astrbot.api.message_components import Image, File, Reply
+            urls = []
+            # 直接提取当前消息中的图片
+            for comp in event.message_obj.message:
+                if isinstance(comp, (Image, File)):
+                    url = getattr(comp, "url", None) or getattr(comp, "file", None)
+                    if url:
+                        urls.append(url)
+            # 检查引用消息，从原始消息中提取图片
+            for comp in event.message_obj.message:
+                if isinstance(comp, Reply):
+                    try:
+                        platform_name = event.get_platform_name()
+                        if platform_name == "aiocqhttp":
+                            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+                            if isinstance(event, AiocqhttpMessageEvent):
+                                client = event.bot
+                                msg_id = comp.id
+                                ret = await client.api.call_action("get_msg", message_id=msg_id)
+                                for seg in ret.get("message", []):
+                                    if seg.get("type") == "image":
+                                        url = seg.get("data", {}).get("url") or seg.get("data", {}).get("file")
+                                        if url:
+                                            urls.append(url)
+                                    elif seg.get("type") == "file":
+                                        url = seg.get("data", {}).get("url") or seg.get("data", {}).get("file")
+                                        if url:
+                                            urls.append(url)
+                    except Exception as e:
+                        logger.warning(f"获取引用消息图片失败: {e}")
+            return urls
+        except Exception as e:
+            logger.error(f"获取图片URL失败: {e}")
+            return []
+
     # ================== 主入口 ==================
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        # 仅响应私聊（可选）
-        if self.only_private and not event.is_private_chat():
-            return
-
-        # ========== 新增：如果是群聊，只响应被 @ 的情况 ==========
-        if not event.is_private_chat():
-            # 尝试检测是否 @ 了当前机器人
-            try:
-                # 从消息组件中提取 At 组件
-                from astrbot.api.message_components import At
-                # 获取机器人的QQ号（或者通过 self.character_key 找）
-                bot_qq = str(event.self_id) # self_id 是机器人的ID
-                at_targets = [comp.qq for comp in event.message_obj.message if isinstance(comp, At)]
-                
-                # 如果消息里没有 @ 机器人，或者 @ 的是别人，直接返回（不触发）
-                if str(bot_qq) not in [str(q) for q in at_targets]:
-                    logger.info(f"未 @ 机器人，群聊消息忽略: {event.message_str[:20]}")
-                    return
-            except Exception:
-                # 如果解析失败，兜底直接放行
-                pass
         try:
+            # ====== 获取消息文本（提前定义，防止后续报错） ======
             user_text = event.message_str
-            if not user_text:
+            if not user_text and not await self._has_image(event):
                 return
 
-            self._migrate_legacy_memory(event)
+            # ====== 检测是否包含图片 ======
+            has_image = await self._has_image(event)
 
-            # 获取中文、日语、情绪、分句中文
-            if self.use_llm_judge:
-                zh_text, ja_list, emo_list, display_list, lang_list = await self._get_llm_reply(event, user_text)
+            logger.info(f"【调试】当前消息组件: {event.message_obj.message}")#注释
+
+
+            if has_image:
+                image_urls = await self._get_image_urls(event)
+                if self.image_reply_mode == "official":
+                    # 官方处理，直接返回
+                    return
+                if self.image_caption_model_name:
+                    if not image_urls:
+                        logger.warning("检测到图片但未能提取到图片数据，放弃识图。")
+                        return
+                    zh_text, ja_list, emo_list, display_list, lang_list = await self._get_image_reply(event, user_text, image_urls)
+                else:
+                    # 未配置模型，交给官方
+                    logger.info("未配置识图模型名称，将交给官方处理。")
+                    return
             else:
-                zh_text = user_text
-                ja_list = [user_text]
-                emo_list = [self.default_voice]
-                display_list = [user_text]
-                lang_list = [user_text]
+                # ====== 原有纯文本逻辑 ======
+                if self.use_llm_judge:
+                    zh_text, ja_list, emo_list, display_list, lang_list = await self._get_llm_reply(event, user_text)
+                else:
+                    zh_text = user_text
+                    ja_list = [user_text]
+                    emo_list = [self.default_voice]
+                    display_list = [user_text]
+                    lang_list = [user_text]
 
+            # ====== 仅响应私聊 ======
+            if self.only_private and not event.is_private_chat():
+                return
+
+            # ====== 群聊：只响应被 @ 的情况 ======
+            if not event.is_private_chat():
+                try:
+                    from astrbot.api.message_components import At
+                    bot_qq = str(getattr(event.message_obj, 'self_id', None) or '')
+                    at_targets = [comp.qq for comp in event.message_obj.message if isinstance(comp, At)]
+                    if str(bot_qq) not in [str(q) for q in at_targets]:
+                        return
+                except Exception as e:
+                    logger.error(f"群聊 @ 检测异常，默认忽略: {e}")
+                    return
+
+            # ====== 检查是否成功获取回复 ======
             if not zh_text:
                 await self.context.send_message(
                     event.unified_msg_origin,
@@ -1098,11 +1369,9 @@ class Main(Star):
                 event.stop_event()
                 return
 
-            # ========== 将用户输入和本插件回复保存到本地文件 ==========
+            # ====== 保存记忆 ======
             try:
-                # 获取当前会话的记忆文件路径
                 current_memory_file = self._get_memory_file(event)
-
                 history_data = []
                 if current_memory_file.exists():
                     with open(current_memory_file, 'r', encoding='utf-8') as f:
@@ -1111,7 +1380,6 @@ class Main(Star):
                 else:
                     history_data = []
 
-                # 尝试获取发送者ID和昵称
                 try:
                     sender_id = event.get_sender_id()
                 except Exception:
@@ -1121,53 +1389,47 @@ class Main(Star):
                 except Exception:
                     sender_name = ""
 
-                # 用户消息：带上发送者ID和昵称
                 history_data.append({
                     "role": "user",
                     "content": user_text,
                     "sender_id": sender_id,
-                    "sender_name": sender_name
+                    "sender_name": sender_name,
+                    "timestamp": time.time()
                 })
-                # Bot 回复
-                history_data.append({"role": "assistant", "content": zh_text})
 
-                # 仅保留最近 60 条（30轮对话）
+                if self.separate_send and self.text_separate and display_list:
+                    for text_seg in display_list:
+                        history_data.append({"role": "assistant", "content": text_seg, "timestamp": time.time()})
+                else:
+                    history_data.append({"role": "assistant", "content": zh_text, "timestamp": time.time()})
+
                 history_data = history_data[-60:]
-
-                # 保存时附带当前角色名，方便识别
                 with open(current_memory_file, 'w', encoding='utf-8') as f:
                     json.dump({"character_name": self.character_name, "history": history_data}, f, ensure_ascii=False, indent=2)
             except Exception as e:
-                logger.warning(f"保存本地记忆失败: {e}")
-            # =======================================================
+                logger.warning(f"保存记忆失败: {e}")
 
-            # 打印完整的情绪和分句信息
+            # ====== 合成语音 ======
             logger.info(f"模型输出分句: {ja_list}")
             logger.info(f"模型输出情绪: {emo_list}")
 
             temp_wavs = []
             failed_sentences = []
-
-            # 并行合成所有句子
             tasks = [self._synthesize_sentence(ja_list[i], emo_list[i]) for i in range(len(ja_list))]
             results = await asyncio.gather(*tasks)
-            
             for i, temp_wav in enumerate(results):
                 if temp_wav:
                     temp_wavs.append(temp_wav)
                 else:
                     failed_sentences.append(ja_list[i])
-
             if failed_sentences:
-                logger.warning(f"以下句子合成失败（已在语音中跳过，但文本仍会发送）: {failed_sentences}")
+                logger.warning(f"以下句子合成失败: {failed_sentences}")
 
-            # ========== 发送逻辑（双平台自适应） ==========
-            # 判断当前平台类型
-            is_aiocqhttp = event.get_platform_name() == "aiocqhttp"   # OneBot v11
-            is_qq_official = event.get_platform_name() == "qq_official"  # QQ官方
+            # ====== 发送逻辑 ======
+            is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
+            is_qq_official = event.get_platform_name() == "qq_official"
 
             if self.separate_send and self.send_voice_separately:
-                # 语音分开发送
                 for idx, temp_wav in enumerate(temp_wavs):
                     if temp_wav and temp_wav.exists():
                         sentence_text = display_list[idx] if idx < len(display_list) else zh_text
@@ -1175,10 +1437,8 @@ class Main(Star):
                             sentence_text = zh_text
 
                         if is_aiocqhttp:
-                            # OneBot v11 使用被动回复
                             yield event.chain_result([Plain(sentence_text), Record(file=str(temp_wav))])
                         else:
-                            # 其他平台（如QQ官方）主动发送
                             await self.context.send_message(
                                 event.unified_msg_origin,
                                 MessageChain([Plain(sentence_text), Record(file=str(temp_wav))])
@@ -1194,18 +1454,15 @@ class Main(Star):
                         except:
                             pass
             else:
-                # 合并发送逻辑
                 combined_audio = self._merge_wavs(temp_wavs)
                 if combined_audio:
                     if self.separate_send and self.text_separate:
                         if is_aiocqhttp:
-                            # OneBot v11 被动回复
                             yield event.chain_result([Record(file=combined_audio)])
                             for text in display_list:
                                 yield event.plain_result(text)
                                 await asyncio.sleep(0.2)
                         else:
-                            # 其他平台主动发送
                             await self.context.send_message(
                                 event.unified_msg_origin,
                                 MessageChain([Record(file=combined_audio)])
@@ -1219,10 +1476,8 @@ class Main(Star):
                     else:
                         combined_text = "".join(display_list) if display_list else zh_text
                         if is_aiocqhttp:
-                            # OneBot v11 被动回复
                             yield event.chain_result([Plain(combined_text), Record(file=combined_audio)])
                         else:
-                            # 其他平台主动发送
                             await self.context.send_message(
                                 event.unified_msg_origin,
                                 MessageChain([Plain(combined_text), Record(file=combined_audio)])
@@ -1234,7 +1489,7 @@ class Main(Star):
                         except:
                             pass
                 else:
-                    logger.error("所有 TTS 句子均合成失败，已降级为纯文本回复。")
+                    logger.error("TTS 合成失败，降级为纯文本。")
                     if is_aiocqhttp:
                         yield event.plain_result(zh_text)
                     else:
@@ -1243,10 +1498,10 @@ class Main(Star):
                             MessageChain().message(zh_text)
                         )
 
-            # 最后停止事件，避免主程序重复回复
+            # ====== 停止事件 ======
             self._cleanup_voice_cache()
             event.stop_event()
         except Exception as e:
             logger.error(f"on_message 处理异常: {type(e).__name__}: {e}")
             if event.get_platform_name() == "qq_official":
-                logger.warning("QQ官方平台被动回复次数受限，主动发送同样需要权限，若报错请检查主动消息权限。")
+                logger.warning("QQ官方平台被动回复次数受限，主动发送同样需要权限。")

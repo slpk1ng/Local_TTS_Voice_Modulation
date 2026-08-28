@@ -11,6 +11,19 @@
     "type": "string",
     "default": ""
   },
+  "image_caption_model_name": {
+    "description": "【可选】识图模型名称",
+    "hint": "用于处理图片，接收图片并输出JSON。需支持视觉的多模态模型。留空则遇到图片时直接跳过，让官方处理(前提是在 Astrbot 中正确配置了配置文件)。",
+    "type": "string",
+    "default": ""
+  },
+  "image_reply_mode": {
+    "description": "图片回复模式",
+    "hint": "选择遇到图片时的处理方式：plugin=强制使用插件识图模型（需部署并填写识图模型名称）；official=交给官方LLM处理（需在 Astrbot 配置文件中正确配置）；auto=配置了识图模型就用，否则交给官方。",
+    "type": "string",
+    "default": "auto",
+    "options": ["plugin", "official", "auto"]
+  },
   "llm_backend": {
     "description": "LLM后端类型",
     "hint": "选择 Ollama 使用专属API，选择 OpenAI 兼容接口以适配 LM Studio、vLLM、LocalAI 等其他本地大模型部署软件。",
@@ -56,6 +69,12 @@
     "hint": "单位秒。开启深度思考后会变慢，算力低的显卡或CPU建议设置在120秒以上，默认120秒。",
     "type": "int",
     "default": 120
+  },
+  "image_caption_timeout": {
+    "description": "识图模型请求超时时间（秒）",
+    "hint": "单位秒。识图模型（多模态）推理较慢，建议 60 秒以上，默认 90 秒。（没有填写识图模型名称不用管）",
+    "type": "int",
+    "default": 90
   },
   "client_base_url": {
     "description": "GPT-SoVITS 服务地址",

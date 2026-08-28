@@ -12,7 +12,7 @@
         select, .btn { padding: 8px 12px; border-radius: 6px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; font-size: 14px; }
         .btn:hover { background: #f0f0f0; }
         #fileList { display: flex; flex-direction: column; gap: 4px; }
-        .file-item { display: flex; align-items: center; background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; cursor: pointer; transition: all 0.2s; }
+        .file-item { display: flex; align-items: center; background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; cursor: pointer; transition: all 0.2s; position: relative; }
         .file-item:hover { border-color: #2196F3; }
         .file-item.selected { border-color: #2196F3; background: #e3f2fd; }
         .checkbox { width: 24px; height: 24px; flex-shrink: 0; border: 2px solid #ddd; border-radius: 4px; margin-right: 12px; display: none; align-items: center; justify-content: center; font-size: 16px; color: white; user-select: none; transition: background 0.2s, border-color 0.2s; }
@@ -21,6 +21,7 @@
         .file-item.selected .checkbox::after { content: "✓"; }
         .file-info { flex-grow: 1; min-width: 0; }
         .file-name { font-weight: bold; font-size: 15px; word-break: break-all; }
+        .file-subname { color: #999; font-size: 12px; white-space: nowrap; margin-left: 10px; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); }
         .last-msg { color: #888; font-size: 13px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .bottom-btns { position: fixed; bottom: 30px; right: 30px; display: flex; gap: 10px; }
         .btn-action { color: white; border: none; padding: 15px 25px; border-radius: 30px; cursor: pointer; font-size: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none; }
@@ -53,6 +54,7 @@
         .chat-row .msg-checkbox { margin-right: 5px; display: none; }
         body.chat-multi-mode .chat-row .msg-checkbox { display: inline-block; }
         #close-modal { cursor: pointer; font-size: 20px; padding: 0 10px; }
+        .time-divider { text-align: center; color: #999; font-size: 12px; margin: 10px 0; }
     </style>
 </head>
 <body>
@@ -109,6 +111,9 @@
         let memoriesData = [];
         let currentSort = 'role';
         let currentFilename = '';
+        let currentChatHistory = [];
+        let chatMultiMode = false;
+        let selectedMsgIndices = new Set();
 
         const msgDiv = document.getElementById('message');
         const sortSelect = document.getElementById('sort-select');
@@ -118,12 +123,10 @@
         const viewBtn = document.getElementById('viewBtn');
         const deleteBtn = document.getElementById('deleteBtn');
 
-        // 聊天记录相关变量
-        let chatMultiMode = false;
-        let selectedMsgIndices = new Set();
-        let currentChatHistory = [];
-
-        sortSelect.addEventListener('change', (e) => { currentSort = e.target.value; renderList(); });
+        sortSelect.addEventListener('change', (e) => {
+            currentSort = e.target.value;
+            renderList();
+        });
 
         multiSelectBtn.addEventListener('click', () => {
             isMultiSelect = !isMultiSelect;
@@ -186,10 +189,22 @@
             } catch (e) { console.error("加载列表失败:", e); showMessage('加载失败：' + e.message, true); }
         }
 
+        // 排序函数：按角色分组，组内按最后修改时间降序
         function sortData() {
-            if (currentSort === 'role') { memoriesData.sort((a, b) => (a.role_name || '').localeCompare(b.role_name || '')); }
-            else if (currentSort === 'newest') { memoriesData.sort((a, b) => (b.modified_time || 0) - (a.modified_time || 0)); }
-            else if (currentSort === 'oldest') { memoriesData.sort((a, b) => (a.modified_time || 0) - (b.modified_time || 0)); }
+            if (currentSort === 'role') {
+                memoriesData.sort((a, b) => {
+                    if (a.role_name !== b.role_name) {
+                        return (a.role_name || '').localeCompare(b.role_name || '');
+                    }
+                    return (b.modified_time || 0) - (a.modified_time || 0);
+                });
+            }
+            else if (currentSort === 'newest') {
+                memoriesData.sort((a, b) => (b.modified_time || 0) - (a.modified_time || 0));
+            }
+            else if (currentSort === 'oldest') {
+                memoriesData.sort((a, b) => (a.modified_time || 0) - (b.modified_time || 0));
+            }
         }
 
         function renderList() {
@@ -206,7 +221,14 @@
                 lastRole = mem.role_name;
                 const isSelected = selectedFiles.has(mem.filename);
                 if (isSelected) item.classList.add('selected');
-                item.innerHTML = `<div class="checkbox"></div><div class="file-info"><div class="file-name">${mem.filename}</div><div class="last-msg">${mem.last_sentence || '（暂无对话）'}</div></div>`;
+                // 显示主标题为 display_name（如果有），否则用 filename；右侧显示 filename
+                const mainTitle = mem.display_name || mem.filename;
+                item.innerHTML = `<div class="checkbox"></div>
+                    <div class="file-info">
+                        <div class="file-name">${mainTitle}</div>
+                        <div class="last-msg">${mem.last_sentence || '（暂无对话）'}</div>
+                    </div>
+                    <div class="file-subname">${mem.filename}</div>`;
                 item.addEventListener('click', () => {
                     const filename = mem.filename;
                     if (isMultiSelect) {
@@ -215,6 +237,16 @@
                         if (selectedFiles.has(filename) && selectedFiles.size === 1) { selectedFiles.clear(); } else { selectedFiles.clear(); selectedFiles.add(filename); }
                     }
                     renderList();
+                });
+                // 双击打开聊天记录（非多选模式）
+                item.addEventListener('dblclick', () => {
+                    if (isMultiSelect) return;
+                    if (!selectedFiles.has(mem.filename)) {
+                        selectedFiles.clear();
+                        selectedFiles.add(mem.filename);
+                        renderList();
+                    }
+                    openChatView(mem.filename);
                 });
                 list.appendChild(item);
             });
@@ -279,10 +311,8 @@
             });
         });
 
-        document.getElementById('viewBtn').addEventListener('click', async () => {
-            if (isMultiSelect) { showMessage('多选模式下无法查看聊天记录，请先取消多选！', true); return; }
-            if (selectedFiles.size !== 1) { showMessage('请先选中一个文件！', true); return; }
-            const filename = Array.from(selectedFiles)[0];
+        // 打开聊天记录
+        async function openChatView(filename) {
             currentFilename = filename;
             try {
                 const bridge = window.AstrBotPluginPage;
@@ -292,16 +322,69 @@
                 renderChat();
                 document.getElementById('list-view').style.display = 'none';
                 document.getElementById('chat-view').classList.add('active');
+                // 绑定 ESC 键返回列表
+                document.addEventListener('keydown', escHandler);
             } catch (e) { showMessage('请求失败：' + e.message, true); }
+        }
+
+        // ESC 键处理函数
+        function escHandler(e) {
+            if (e.key === 'Escape') {
+                closeChatView();
+            }
+        }
+
+        // 关闭聊天记录视图（ESC 或点击 ×）
+        function closeChatView() {
+            document.getElementById('chat-view').classList.remove('active');
+            document.getElementById('list-view').style.display = 'block';
+            chatMultiMode = false;
+            document.body.classList.remove('chat-multi-mode');
+            // 移除 ESC 监听
+            document.removeEventListener('keydown', escHandler);
+        }
+
+        // 查看聊天记录按钮
+        document.getElementById('viewBtn').addEventListener('click', () => {
+            if (isMultiSelect) { showMessage('多选模式下无法查看聊天记录，请先取消多选！', true); return; }
+            if (selectedFiles.size !== 1) { showMessage('请先选中一个文件！', true); return; }
+            const filename = Array.from(selectedFiles)[0];
+            openChatView(filename);
         });
+
+        // 时间格式化函数
+        function formatTime(timestamp) {
+            const date = new Date(timestamp * 1000);
+            const y = date.getFullYear();
+            const m = date.getMonth() + 1;
+            const d = date.getDate();
+            const hh = date.getHours();
+            const mm = date.getMinutes();
+            return `${y}/${m}/${d} ${hh}:${mm}`;
+        }
 
         function renderChat() {
             const body = document.getElementById('chat-body');
             body.innerHTML = '';
-            document.getElementById('chat-title').innerText = (currentChatHistory.length > 0) ? '聊天记录' : '空记录';
+            // 使用 display_name 作为标题（从 memoriesData 中查找）
+            const targetMem = memoriesData.find(m => m.filename === currentFilename);
+            const title = targetMem ? targetMem.display_name : '聊天记录';
+            document.getElementById('chat-title').innerText = title;
             const isPrivate = currentFilename.startsWith('private_');
+            let lastTimestamp = null;
             
             currentChatHistory.forEach((msg, idx) => {
+                // 时间分隔线：间隔超过5分钟
+                if (msg.timestamp && lastTimestamp && (msg.timestamp - lastTimestamp > 300)) {
+                    const timeDiv = document.createElement('div');
+                    timeDiv.className = 'time-divider';
+                    timeDiv.textContent = formatTime(msg.timestamp);
+                    body.appendChild(timeDiv);
+                }
+                if (msg.timestamp) {
+                    lastTimestamp = msg.timestamp;
+                }
+
                 const row = document.createElement('div');
                 row.className = 'chat-row ' + (msg.role === 'user' ? 'user' : 'bot');
                 const checkbox = document.createElement('input');
@@ -337,7 +420,6 @@
 
                 row.appendChild(bubble);
 
-                // 【关键修复】点击行时同步维护 selectedMsgIndices 集合
                 row.addEventListener('click', (e) => {
                     if (chatMultiMode) {
                         checkbox.checked = !checkbox.checked;
@@ -352,6 +434,10 @@
                 });
                 body.appendChild(row);
             });
+
+            // 自动滚动到底部（最新消息）
+            body.scrollTop = body.scrollHeight;
+
             updateChatTools();
         }
 
@@ -415,12 +501,8 @@
             });
         });
 
-        document.getElementById('close-modal').addEventListener('click', () => {
-            document.getElementById('chat-view').classList.remove('active');
-            document.getElementById('list-view').style.display = 'block';
-            chatMultiMode = false;
-            document.body.classList.remove('chat-multi-mode');
-        });
+        // 关闭按钮事件
+        document.getElementById('close-modal').addEventListener('click', closeChatView);
 
         waitForBridge().then(loadList).catch(e => showMessage('初始化失败：' + e.message, true));
     </script>
