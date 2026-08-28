@@ -66,7 +66,7 @@
                 <button class="btn" id="selectAllBtn" style="display:none;">全选</button>
                 <button class="btn" id="invertBtn" style="display:none;">反选</button>
                 <select id="sort-select">
-                    <option value="role">按角色</option>
+                    <option value="role">按角色（组内最新）</option>
                     <option value="newest">按最新对话</option>
                     <option value="oldest">按最旧对话</option>
                 </select>
@@ -435,8 +435,14 @@
                 body.appendChild(row);
             });
 
-            // 自动滚动到底部（最新消息）
-            body.scrollTop = body.scrollHeight;
+            // 自动滚动到底部（最新消息）——使用 requestAnimationFrame 确保布局完成
+            requestAnimationFrame(() => {
+                body.scrollTop = body.scrollHeight;
+                // 双重保险
+                setTimeout(() => {
+                    body.scrollTop = body.scrollHeight;
+                }, 50);
+            });
 
             updateChatTools();
         }
