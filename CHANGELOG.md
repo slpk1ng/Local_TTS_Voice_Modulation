@@ -101,6 +101,6 @@ WebUI 中新增 `查看聊天记录` 、 `全选` 、 `取消全选` 和 `反选
 
 #### 其他：
 
-* 余波\~仓库链接：\[https://github.com/slpk1ng/Aftermath](https://github.com/slpk1ng/Aftermath)
-* 丛雨AIpet仓库链接：\[https://github.com/kuxiaowo/AIpet-Murasame](https://github.com/kuxiaowo/AIpet-Murasame)。
+* 余波\~仓库链接：\[https://github.com/slpk1ng/Aftermath](https://github.com/slpk1ng/Aftermath](https://github.com/slpk1ng/Aftermath](https://github.com/slpk1ng/Aftermath)
+* 丛雨AIpet仓库链接：\[https://github.com/kuxiaowo/AIpet-Murasame](https://github.com/kuxiaowo/AIpet-Murasame](https://github.com/kuxiaowo/AIpet-Murasame](https://github.com/kuxiaowo/AIpet-Murasame)。
 
