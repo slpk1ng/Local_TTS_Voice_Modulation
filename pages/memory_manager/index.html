@@ -8,7 +8,7 @@
         body { font-family: sans-serif; background: #f5f5f5; color: #333; padding: 20px; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
         h2 { margin: 0; }
-        .controls { display: flex; gap: 10px; align-items: center; }
+        .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
         select, .btn { padding: 8px 12px; border-radius: 6px; border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer; font-size: 14px; }
         .btn:hover { background: #f0f0f0; }
         #fileList { display: flex; flex-direction: column; gap: 4px; }
@@ -62,6 +62,10 @@
         <div class="header">
             <h2>角色记忆文件管理</h2>
             <div class="controls">
+                <input type="text" id="searchInput" placeholder="搜索文件名或内容..." style="padding:8px; width:200px;">
+                <select id="roleFilter">
+                    <option value="">所有角色</option>
+                </select>
                 <button class="btn" id="multiSelectBtn">多选</button>
                 <button class="btn" id="selectAllBtn" style="display:none;">全选</button>
                 <button class="btn" id="invertBtn" style="display:none;">反选</button>
@@ -70,17 +74,23 @@
                     <option value="newest">按最新对话</option>
                     <option value="oldest">按最旧对话</option>
                 </select>
+                <button class="btn" id="exportBtn">导出选中</button>
+                <button class="btn" id="restoreBtn">恢复</button>
+                <input type="file" id="restoreFile" accept=".json" style="display:none;">
             </div>
         </div>
         <div id="message"></div>
+        <div id="exportTip" style="background: #fff3cd; padding: 8px 12px; border-radius: 4px; margin-bottom: 10px; font-size: 13px; color: #856404; border: 1px solid #ffeeba;">
+            提示：由于客户端沙箱限制，导出功能请右键本插件的WebUI并复制链接在浏览器中导出哦~
+        </div>
         <div id="fileList"></div>
         <div class="bottom-btns">
             <button class="btn-action" id="viewBtn">查看聊天记录</button>
             <button class="btn-action" id="deleteBtn">删除选中</button>
         </div>
     </div>
-
     <div id="chat-view">
+
         <div id="chat-header">
             <span id="chat-title">聊天记录</span>
             <div>
@@ -88,6 +98,7 @@
                 <button id="chatSelectAllBtn" class="btn" style="display:none;">全选</button>
                 <button id="chatInvertBtn" class="btn" style="display:none;">反选</button>
                 <button id="chatDeleteBtn" class="btn" style="display:none; background:#f44336; color:white;">删除选中</button>
+                <button id="chatExportBtn" class="btn">导出此记录</button>
                 <span id="close-modal">×</span>
             </div>
         </div>
@@ -106,6 +117,9 @@
     </div>
 
     <script>
+        let currentRoleFilter = '';
+        let searchQuery = '';
+        let allRoles = new Set();
         let selectedFiles = new Set();
         let isMultiSelect = false;
         let memoriesData = [];
@@ -122,6 +136,20 @@
         const invertBtn = document.getElementById('invertBtn');
         const viewBtn = document.getElementById('viewBtn');
         const deleteBtn = document.getElementById('deleteBtn');
+        const chatMultiBtn = document.getElementById('chatMultiBtn');
+        const chatSelectAllBtn = document.getElementById('chatSelectAllBtn');
+        const chatInvertBtn = document.getElementById('chatInvertBtn');
+        const chatDeleteBtn = document.getElementById('chatDeleteBtn');
+
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+            searchQuery = e.target.value.trim();
+            renderList();
+        });
+
+        document.getElementById('roleFilter').addEventListener('change', (e) => {
+            currentRoleFilter = e.target.value;
+            renderList();
+        });
 
         sortSelect.addEventListener('change', (e) => {
             currentSort = e.target.value;
@@ -185,6 +213,19 @@
                 const bridge = window.AstrBotPluginPage;
                 const data = await bridge.apiGet('api/list');
                 memoriesData = data.memories || [];
+                // 更新角色下拉选项
+                allRoles.clear();
+                memoriesData.forEach(mem => allRoles.add(mem.role_name));
+                const roleFilter = document.getElementById('roleFilter');
+                const currentVal = roleFilter.value;
+                roleFilter.innerHTML = '<option value="">所有角色</option>';
+                allRoles.forEach(role => {
+                    const opt = document.createElement('option');
+                    opt.value = role;
+                    opt.textContent = role;
+                    roleFilter.appendChild(opt);
+                });
+                roleFilter.value = currentVal;
                 renderList();
             } catch (e) { console.error("加载列表失败:", e); showMessage('加载失败：' + e.message, true); }
         }
@@ -211,9 +252,29 @@
             sortData();
             const list = document.getElementById('fileList');
             list.innerHTML = '';
-            if (memoriesData.length === 0) { showMessage('暂无记忆文件'); return; }
+
+            // 过滤
+            let filtered = memoriesData;
+            if (currentRoleFilter) {
+                filtered = filtered.filter(mem => mem.role_name === currentRoleFilter);
+            }
+            if (searchQuery) {
+                const q = searchQuery.toLowerCase();
+                filtered = filtered.filter(mem => {
+                    return mem.filename.toLowerCase().includes(q) ||
+                           (mem.display_name && mem.display_name.toLowerCase().includes(q)) ||
+                           (mem.last_sentence && mem.last_sentence.toLowerCase().includes(q));
+                });
+            }
+
+            if (filtered.length === 0) {
+                list.innerHTML = '<div style="text-align:center;color:#999;padding:20px;">无匹配文件</div>';
+                updateButtons(); // 隐藏按钮
+                return;
+            }
+
             let lastRole = "";
-            memoriesData.forEach(mem => {
+            filtered.forEach(mem => {
                 const item = document.createElement('div');
                 item.className = 'file-item';
                 item.dataset.filename = mem.filename;
@@ -221,7 +282,6 @@
                 lastRole = mem.role_name;
                 const isSelected = selectedFiles.has(mem.filename);
                 if (isSelected) item.classList.add('selected');
-                // 显示主标题为 display_name（如果有），否则用 filename；右侧显示 filename
                 const mainTitle = mem.display_name || mem.filename;
                 item.innerHTML = `<div class="checkbox"></div>
                     <div class="file-info">
@@ -238,7 +298,6 @@
                     }
                     renderList();
                 });
-                // 双击打开聊天记录（非多选模式）
                 item.addEventListener('dblclick', () => {
                     if (isMultiSelect) return;
                     if (!selectedFiles.has(mem.filename)) {
@@ -250,8 +309,9 @@
                 });
                 list.appendChild(item);
             });
-            if (memoriesData.length > 0 && isMultiSelect) {
-                const allSelected = selectedFiles.size === memoriesData.length;
+
+            if (isMultiSelect) {
+                const allSelected = selectedFiles.size === filtered.length;
                 selectAllBtn.textContent = allSelected ? '取消全选' : '全选';
             }
             updateButtons();
@@ -310,6 +370,113 @@
                 } catch (e) { showMessage('请求失败：' + e.message, true); }
             });
         });
+
+        // 导出选中按钮事件
+        document.getElementById('exportBtn').addEventListener('click', async () => {
+            if (selectedFiles.size === 0) {
+                showMessage('请先选中文件', true);
+                return;
+            }
+            // 由于沙箱环境不支持 prompt，直接导出 JSON 格式，避免报错
+            const fmt = 'json';
+            try {
+                const bridge = window.AstrBotPluginPage;
+                const result = await bridge.apiPost('api/export_chat', { files: Array.from(selectedFiles), format: fmt });
+                
+                // 兼容两种返回结构：直接数组，或 {success, data}
+                let exportData = result;
+                if (result && typeof result === 'object' && !Array.isArray(result) && result.data) {
+                    exportData = result.data;
+                }
+                
+                if (exportData !== undefined && exportData !== null) {
+                    const content = JSON.stringify(exportData, null, 2);
+                    const blob = new Blob([content], { type: 'application/json' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `chat_export_${Date.now()}.json`;
+                    a.click();
+                } else {
+                    console.error('导出返回数据为空:', result);
+                    showMessage('导出失败：返回数据为空', true);
+                }
+            } catch (e) { 
+                console.error('导出请求异常:', e);
+                showMessage('请求失败：' + e.message, true); 
+            }
+        });
+
+        // 恢复按钮事件（兼容导出文件格式和备份文件格式）
+        const restoreBtn = document.getElementById('restoreBtn');
+        const restoreFileInput = document.getElementById('restoreFile');
+        if (restoreBtn && restoreFileInput) {
+            restoreBtn.addEventListener('click', () => {
+                restoreFileInput.click();
+            });
+
+            restoreFileInput.addEventListener('change', async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = async (ev) => {
+                    try {
+                        const parsedData = JSON.parse(ev.target.result);
+                        let backupData;
+                        
+                        // 情况1：直接是备份对象（包含 memories 字段）
+                        if (parsedData && typeof parsedData === 'object' && !Array.isArray(parsedData) && parsedData.memories) {
+                            backupData = parsedData;
+                        }
+                        // 情况2：导出功能返回的数组 [{filename, character_name, history}]
+                        else if (Array.isArray(parsedData)) {
+                            // 将导出数组转换为备份格式
+                            backupData = {
+                                memories: {}
+                            };
+                            parsedData.forEach(item => {
+                                if (item.filename && item.history) {
+                                    backupData.memories[item.filename] = {
+                                        character_name: item.character_name || '未知',
+                                        history: item.history || []
+                                    };
+                                }
+                            });
+                        }
+                        // 情况3：导出功能返回的对象 {success: true, data: [...]}
+                        else if (parsedData && parsedData.success && Array.isArray(parsedData.data)) {
+                            backupData = {
+                                memories: {}
+                            };
+                            parsedData.data.forEach(item => {
+                                if (item.filename && item.history) {
+                                    backupData.memories[item.filename] = {
+                                        character_name: item.character_name || '未知',
+                                        history: item.history || []
+                                    };
+                                }
+                            });
+                        }
+                        else {
+                            showMessage('文件格式错误：无法识别的数据格式', true);
+                            return;
+                        }
+                        
+                        const bridge = window.AstrBotPluginPage;
+                        const result = await bridge.apiPost('api/restore', backupData);
+                        if (result && result.success) {
+                            showMessage(result.message || '恢复成功');
+                            loadList();
+                        } else {
+                            showMessage('恢复失败：' + ((result && result.error) || '未知错误'), true);
+                        }
+                    } catch (err) {
+                        showMessage('文件解析失败：' + err.message, true);
+                    }
+                    e.target.value = '';
+                };
+                reader.readAsText(file);
+            });
+        }
 
         // 打开聊天记录
         async function openChatView(filename) {
@@ -505,6 +672,36 @@
                     }
                 } catch (e) { showMessage('请求失败：' + e.message, true); }
             });
+        });
+
+        // 导出当前聊天记录按钮事件
+        document.getElementById('chatExportBtn').addEventListener('click', async () => {
+            if (!currentFilename) return;
+            try {
+                const bridge = window.AstrBotPluginPage;
+                const result = await bridge.apiPost('api/export_chat', { files: [currentFilename], format: 'json' });
+                
+                // 兼容两种返回结构
+                let exportData = result;
+                if (result && typeof result === 'object' && !Array.isArray(result) && result.data) {
+                    exportData = result.data;
+                }
+                
+                if (exportData !== undefined && exportData !== null) {
+                    const content = JSON.stringify(exportData, null, 2);
+                    const blob = new Blob([content], { type: 'application/json' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `${currentFilename}_export_${Date.now()}.json`;
+                    a.click();
+                } else {
+                    console.error('导出返回数据为空:', result);
+                    showMessage('导出失败：返回数据为空', true);
+                }
+            } catch (e) { 
+                console.error('导出请求异常:', e);
+                showMessage('请求失败：' + e.message, true); 
+            }
         });
 
         // 关闭按钮事件

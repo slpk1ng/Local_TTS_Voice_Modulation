@@ -279,19 +279,19 @@
     "default": false,
     "condition": { "separate_send": true }
   },
+    "text_separate": {
+    "description": "文本分开发送",
+    "hint": "开启后，在语音合并发送的前提下，文本将按句逐条发送（ QQ 官方平台被动回复次数受限(一次回复最多 5 条消息)，报错时建议关闭此选项）。",
+    "type": "bool",
+    "default": false,
+    "condition": { "separate_send": true }
+  },
   "dynamic_sleep": {
     "description": "根据语音时长动态等待",
     "hint": "开启后，分开发送时会根据音频实际时长动态等待（音频播放完 + 0.5秒缓冲），更像真人说话；关闭后固定等待 0.2 秒。",
     "type": "bool",
     "default": true,
     "condition": { "send_voice_separately": true }
-  },
-  "text_separate": {
-    "description": "文本分开发送",
-    "hint": "开启后，在语音合并发送的前提下，文本将按句逐条发送（ QQ 官方平台被动回复次数受限(一次回复最多 5 条消息)，报错时建议关闭此选项）。",
-    "type": "bool",
-    "default": false,
-    "condition": { "separate_send": true }
   },
   "only_private": {
     "description": "仅响应私聊",
@@ -361,38 +361,105 @@
     "default": 300,
     "condition": { "voice_transition": true }
   },
-  "enable_default_emotions": {
-    "description": "是否启用插件默认的丛雨语气",
-    "hint": "开启：在插件的6个默认丛雨语气（pingjing等，需要自行下载README.md的文档内的丛雨语气包链接）的基础上，额外添加你配置的新语气。关闭：完全只使用你在【情绪映射配置】中手动添加的语气，忽略默认文件夹里的6个。（仅当添加了自定义情绪映射时，此设置才有意义）",
+  "llm_emotion_intensity": {
+    "description": "允许 LLM 自动判断情绪强度",
+    "hint": "开启后，AI 会为每句话评估一个 0~1 的情绪强烈程度，插件会自动调整语音的随机性和音色丰富度，让高兴时更兴奋、生气时更激烈。关闭则所有句子使用相同的语音变化幅度。",
     "type": "bool",
     "default": true
   },
-  "emotions_config": {
-    "description": "情绪映射配置",
-    "hint": "【可选】留空（保持暂无条目）即可自动扫描外部目录。仅当你想手动指定额外路径时才添加条目。",
+  "intensity_to_temperature": {
+    "description": "情绪强度对语音变化幅度的影响",
+    "hint": "当 LLM 判断某句话情绪越强烈时，语音的随机性会适当增加，听起来更有爆发力和情感起伏。此数值越大，强度带来的变化越明显；设为 0 则强度不影响随机性。建议保持默认 0.3，如感觉语音过于平淡可略微调高，过于夸张则调低。",
+    "type": "float",
+    "default": 0.3,
+    "condition": { "llm_emotion_intensity": true }
+  },
+  "intensity_to_top_k": {
+    "description": "情绪强度对语音音色丰富度的影响",
+    "hint": "情绪越强烈，语音合成时会从更多的候选音色中挑选，使语气变化更丰富、更生动。此数值越大，强度带来的音色变化越明显；设为 0 则强度不影响音色丰富度。建议保持默认 10，如感觉声音不稳定可适当调低。",
+    "type": "float",
+    "default": 10.0,
+    "condition": { "llm_emotion_intensity": true }
+  },
+  "enable_time_awareness": {
+    "description": "现实时间感知",
+    "hint": "开启后，会将当前时间告知 LLM 模型，使其了解现实时间。(时间使用运行 AstrBot 的服务器本地时间，时区由系统决定。)",
+    "type": "bool",
+    "default": false
+  },
+  "summary_enabled": {
+    "description": "开启对话上下文自动摘要",
+    "hint": "当历史消息超过阈值时，自动调用LLM对旧对话进行摘要，压缩上下文长度，避免遗忘和降智。",
+    "type": "bool",
+    "default": true
+  },
+  "summary_threshold": {
+    "description": "触发摘要的历史消息条数",
+    "hint": "当历史消息总数超过此值时，将旧消息摘要。建议10-20条。",
+    "type": "int",
+    "default": 20
+  },
+  "summary_max_history": {
+    "description": "摘要后保留的最近消息条数",
+    "hint": "摘要后仅保留最近这几条详细消息，其余用摘要替代。建议3-5条。",
+    "type": "int",
+    "default": 5
+  },
+  "active_character": {
+    "description": "【可选】当前激活的角色标识符",
+    "hint": "【想切换角色时填】填写一个已配置角色的 character_key(你设置的角色名拼音/英文名)，留空则自动使用第一个角色。切换后建议在此保存，以便重启后保持。",
+    "type": "string",
+    "default": ""
+  },
+  "roles": {
+    "description": "【可选】多角色配置",
+    "hint": "如需多个角色，请在此添加角色条目。每个角色需指定唯一标识符、名称、提示词等。留空则使用上方单个角色配置。",
     "type": "template_list",
     "templates": {
-      "emotion_entry": {
-        "name": "情绪条目",
-        "display_item": "emotion_name",
+      "role_entry": {
+        "name": "角色条目",
+        "display_item": "character_name",
         "items": {
-          "emotion_name": {
-            "description": "【必填】情绪名称",
-            "hint": "需与文件夹名完全一致，使用拼音命名（英文也可行，但是建议用拼音，比如shengqi）",
+          "character_name": {
+            "description": "角色名称",
             "type": "string",
             "default": ""
           },
-          "ref_filename": {
-            "description": "【必填】参考音频文件名【不要填路径】",
-            "hint": "填 mp3 、wav 等主流音频后缀",
+          "character_key": {
+            "description": "角色标识符（英文/拼音，用于文件命名）",
             "type": "string",
             "default": ""
           },
-          "prompt_text": {
-            "description": "【必填】参考音频对应的文本",
-            "hint": "需与该音频内容完全一致(无需在文件夹中再放.txt文件)",
+          "personality_prompt": {
+            "description": "人格提示词",
+            "type": "text",
+            "default": ""
+          },
+          "json_prompt": {
+            "description": "JSON输出提示词",
+            "type": "text",
+            "default": "【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为：{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"ja\": \"这里是你生成的日语台词\", \"emotion\": \"这里是你判断的情绪\"}, {\"zh\": \"第二句中文\", \"ja\": \"第二句日语\", \"emotion\": \"另一种情绪\"}]}等更多情绪均可。【最终输出规则】最终输出必须严格只包含JSON对象，绝对禁止输出任何思考过程、解释、非JSON文本或Markdown代码块。所有的推理和思考都只能在内部进行，最终回复只能是JSON格式。"
+          },
+          "supplement_prompt": {
+            "description": "补充提示词",
+            "type": "text",
+            "default": ""
+          },
+          "default_voice": {
+            "description": "默认情绪（文件夹名，留空则自动使用第一个）",
             "type": "string",
             "default": ""
+          },
+          "ref_audio_root": {
+            "description": "语气文件夹根目录",
+            "hint": "可选，用于指定该角色独立的语气文件夹根目录，留空则使用全局 ref_audio_root）",
+            "type": "string",
+            "default": ""
+          },
+          "text_lang": {
+            "description": "文本语言（如 zh, ja）",
+            "type": "string",
+            "default": "zh"
           }
         }
       }
