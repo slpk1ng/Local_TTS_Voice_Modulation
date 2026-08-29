@@ -613,21 +613,29 @@ class Main(Star):
         """根据语言代码和强度开关动态生成 JSON 输出提示词"""
         if intensity_enabled:
             prompt = (
-                "【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为："
-                "{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"{lang}\": \"这里是你生成的{lang_name}台词\", \"emotion\": \"这里是你判断的情绪\", \"intensity\": 0.5}, "
-                "{\"zh\": \"第二句中文\", \"{lang}\": \"第二句{lang_name}台词\", \"emotion\": \"另一种情绪\", \"intensity\": 0.8}]}等更多情绪均可。"
-                "每个句子对象必须包含\"intensity\"字段，值为0到1之间的浮点数，表示该句情绪的强烈程度。"
-                "0表示几乎无情绪波动，1表示情绪非常激烈。请根据上下文和角色性格合理判断。"
-                "【最终输出规则】最终输出必须严格只包含JSON对象，绝对禁止输出任何思考过程、解释、非JSON文本或Markdown代码块。"
-                "所有的推理和思考都只能在内部进行，最终回复只能是JSON格式。"
-            )
+                    "【输出格式】你必须严格只返回一个 JSON 对象，不能有任何其他文字、注释或代码块。"
+                    "JSON 结构必须为："
+                    '{"sentences": [{"zh": "中文台词", "ja": "日语台词", "emotion": "情绪名", "intensity": 0.5}, '
+                    '{"zh": "第二句中文", "ja": "第二句日语", "emotion": "另一种情绪", "intensity": 0.8}]}'
+                    "每个句子对象都必须完整包含 zh、ja、emotion、intensity 四个字段，缺一不可。"
+                    "ja 字段必须是对应的日语翻译，不能为空，也不能与 zh 完全相同。"
+                    "emotion 字段必须从系统提供的情绪列表中选择，不能随意创造。"
+                    "intensity 字段是 0 到 1 之间的浮点数，表示该句情绪的强烈程度，0 为几乎无情绪，1 为非常激烈。"
+                    "注意：示例中的 intensity 数值只是格式演示，你必须根据上下文和角色性格自行判断并填写合适的数值，严禁直接照抄示例。"
+                    "【最终输出规则】你的回复只能是一个合法的 JSON 对象，不要包含任何前缀、后缀、解释或 Markdown 标记。"
+                )
         else:
             prompt = (
-                "【输出格式】你必须严格只返回一个紧凑的JSON对象，格式为："
-                "{\"sentences\": [{\"zh\": \"这里是你生成的中文台词\", \"{lang}\": \"这里是你生成的{lang_name}台词\", \"emotion\": \"这里是你判断的情绪\"}, "
-                "{\"zh\": \"第二句中文\", \"{lang}\": \"第二句{lang_name}台词\", \"emotion\": \"另一种情绪\"}]}，"
-                "禁止输出任何解释或代码块。"
+                "【输出格式】你必须严格只返回一个 JSON 对象，不能有任何其他文字、注释或代码块。"
+                "JSON 结构必须为："
+                '{"sentences": [{"zh": "这里是中文台词", "{lang}": "这里是{lang_name}台词", "emotion": "这里是情绪名称"}, '
+                '{"zh": "第二句中文", "{lang}": "第二句{lang_name}台词", "emotion": "第二种情绪"}]}'
+                "每个句子对象都必须完整包含 zh、{lang}、emotion 三个字段，缺一不可。"
+                "{lang} 字段必须是对应的{lang_name}翻译，不能为空，也不能与 zh 完全相同（除非语言就是中文）。"
+                "emotion 字段必须从系统提供的情绪列表中选择，不能随意创造。"
+                "【最终输出规则】你的回复只能是一个合法的 JSON 对象，不要包含任何前缀、后缀、解释或 Markdown 标记。"
             )
+        
         lang_name = self._get_lang_display_name(text_lang)
         prompt = prompt.replace("{lang}", text_lang).replace("{lang_name}", lang_name)
         return prompt
@@ -1120,7 +1128,7 @@ class Main(Star):
 
         # 构造一个简短的提示词，要求模型概括对话要点
         summary_prompt = (
-            "请将以下对话历史压缩为一段不超过200字的摘要，保留关键信息（人物、事件、指令、情绪等）。\n"
+            "请将以下对话历史压缩为一段不超过200字的摘要，只保留用户和其对话的角色明确表达过的事实、事件和指令，不得添加任何对话中没有出现的信息。\n"
             "对话历史：\n" + json.dumps(old_history, ensure_ascii=False)
         )
 
@@ -1132,7 +1140,7 @@ class Main(Star):
                 payload = {
                     "model": self.llm_model_name,
                     "messages": [
-                        {"role": "system", "content": "你是一个对话摘要助手，请用简洁的中文概括对话。"},
+                        {"role": "system", "content": "你需要根据对话摘要总结，请用简洁的中文概括对话。"},
                         {"role": "user", "content": summary_prompt}
                     ],
                     "stream": False,
