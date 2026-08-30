@@ -1,6 +1,6 @@
-# 本地TTS语气变化 v1.2.4
+# 本地TTS语气变化 v1.2.5
 
-- v1.2.4：新增 `现实时间感知` 功能，开启后 LLM 模型能够得知目前的时间；新增 `多角色配置` 和 `选择当前激活的角色标识符` 功能，通过插件内UI实现角色切换 或 WebUI 配置不同角色的提示词、人设等，记忆文件也会按角色分开；新增 `对话上下文总结` ，当历史记录过长时，自动调用 LLM 对旧对话进行摘要，压缩 token，避免“降智”和遗忘重要信息。
+- v1.2.5：新增 `现实时间感知` 功能，开启后 LLM 模型能够得知目前的时间；新增 `多角色配置` 和 `选择当前激活的角色标识符` 功能，通过插件内UI实现角色切换 或 WebUI 配置不同角色的提示词、人设等，记忆文件也会按角色分开；新增 `对话上下文总结` ，当历史记录过长时，自动调用 LLM 对旧对话进行摘要，压缩 token，避免“降智”和遗忘重要信息。
 
 新增 `允许 LLM 自动判断情绪强度` 、`情绪强度对语音变化幅度的影响` 、`情绪强度对语音音色丰富度的影响` 等功能，开启这些功能可以让 TTS 生成的语音更加像真人。
 
@@ -18,9 +18,9 @@ WebUI 体验提升：
 - 对于没有 NVIDIA CUDA 的人群：请修改插件中“TTS 合成设备”为 cpu。
 - 丛雨语气包下载：[https://github.com/slpk1ng/Murasame-s-tone-shifts](https://github.com/slpk1ng/Murasame-s-tone-shifts)。
 - GPT-SoVITS ： [https://github.com/RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 。
-- 查看此插件详细教程：[https://github.com/slpk1ng/Local_TTS_Voice_Modulation/blob/main/guide.md](https://github.com/slpk1ng/Local_TTS_Voice_Modulation/blob/main/guide.md)。
+- 查看此插件详细教程：[https://github.com/slpk1ng/astrbot_plugin_local_tts_voice_modulation/blob/main/guide.md](https://github.com/slpk1ng/astrbot_plugin_local_tts_voice_modulation/blob/main/guide.md)。
 
-## 获取最新版本请优先关注 [https://github.com/slpk1ng/Local_TTS_Voice_Modulation](https://github.com/slpk1ng/Local_TTS_Voice_Modulation)
+## 获取最新版本请优先关注 [https://github.com/slpk1ng/astrbot_plugin_local_tts_voice_modulation](https://github.com/slpk1ng/astrbot_plugin_local_tts_voice_modulation)
 
 喜欢本插件可以为我点个⭐star⭐
 
@@ -251,4 +251,4 @@ D:/tts/yuqi/
 
 ## 更新日志详见
 
-[更新日志](https://github.com/slpk1ng/Local_TTS_Voice_Modulation/blob/main/CHANGELOG.md)
+更新日志详见：[更新日志](https://github.com/slpk1ng/astrbot_plugin_local_tts_voice_modulation/blob/main/CHANGELOG.md)
