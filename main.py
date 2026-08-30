@@ -280,7 +280,7 @@ class Main(Star):
         self._cleanup_voice_cache()
 
         # ========== 注册 WebUI API ==========
-        plugin_name = "Local_TTS_Voice_Modulation"
+        plugin_name = "astrbot_plugin_local_tts_voice_modulation"
 
         try:
             self.context.register_web_api(
