@@ -2,7 +2,7 @@ name: astrbot_plugin_local_tts_voice_modulation
 display_name: 本地TTS语气变化
 short_desc: 当你发现有bug时，可前往本插件的仓库检查最新版哦。
 desc: 新增更多功能，TTS生成的语音变化更加丰富。基于 AstrBot 的一个小白也会使用的智能情绪 TTS 插件。它调用模型自动判断语境情绪，自动匹配高兴、害羞等对应的参考音频，合成极具感情色彩的语音。支持自动扫描外部目录，参数高度可调，轻松适配大众用户。
-version: 1.2.5
+version: 1.2.6
 author: slpk1ng
 support_platforms:
   - aiocqhttp
