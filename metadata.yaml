@@ -1,22 +1,21 @@
 name: astrbot_plugin_local_tts_voice_modulation
 display_name: 本地TTS语气变化
 short_desc: 当你发现有bug时，可前往本插件的仓库检查最新版哦。
-desc: 【最伟大的一次更新】新增更多功能，TTS生成的语音变化更加丰富。新增`现实时间感知`、`多角色配置`、`选择当前激活的角色标识符`、`对话上下文总结`、`允许 LLM 自动判断情绪强度`、`情绪强度对语音变化幅度的影响`、`情绪强度对语音音色丰富度的影响`等更多功能，WebUI 体验提升。基于 AstrBot 的一个小白也会使用的智能情绪 TTS 插件。它调用模型自动判断语境情绪，自动匹配“高兴、害羞”等对应的参考音频，合成极具感情色彩的语音。支持自动扫描外部目录，参数高度可调，轻松适配大众用户。
-version: v1.2.5
+desc: 新增更多功能，TTS生成的语音变化更加丰富。基于 AstrBot 的一个小白也会使用的智能情绪 TTS 插件。它调用模型自动判断语境情绪，自动匹配高兴、害羞等对应的参考音频，合成极具感情色彩的语音。支持自动扫描外部目录，参数高度可调，轻松适配大众用户。
+version: 1.2.5
 author: slpk1ng
 support_platforms:
   - aiocqhttp
   - qq_official_webhook
   - qq_official
 logo: "./logo.png"
+license: "MIT"
 category: TTS语气变化
 repo: https://github.com/slpk1ng/astrbot_plugin_local_tts_voice_modulation
 tags:
-  - TTS 
-  - TTS语气变化 
-  - 文字转语音 
-  - 工具 
-  - 语音 
+  - TTS
+  - TTS语气变化
+  - 文字转语音
+  - 工具
+  - 语音
   - 本地
-  - 多功能
-  - 高度自定义
